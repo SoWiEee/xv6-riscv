@@ -1,15 +1,31 @@
 // kernel/src/arch/trap.rs
+//! Trap handling for RISC-V.
+//!
+//! Defines trap frame and context structures, and implements the trap
+//! entry points called from assembly trampolines.
+
 use super::asm::*;
 use crate::mm::address::PhysPageNum;
 
+/// User trap frame layout.
+/// 
+/// Matches the assembly trampoline expectations. 16-byte aligned for
+/// efficient memory access. Contains all user registers plus kernel
+/// state needed for return to user mode.
 #[repr(C, align(16))]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct TrapFrame {
+    /// Kernel page table (satp value)
     pub kernel_satp: PhysPageNum,
+    /// Kernel stack pointer
     pub kernel_sp: usize,
+    /// Kernel trap handler entry point
     pub kernel_trap: usize,
+    /// User program counter (sepc)
     pub epc: usize,
+    /// Hart ID
     pub kernel_hartid: usize,
+    // User registers
     pub ra: usize,
     pub sp: usize,
     pub gp: usize,
@@ -44,6 +60,7 @@ pub struct TrapFrame {
 }
 
 impl TrapFrame {
+    /// Create a zeroed trap frame.
     pub const fn new() -> Self {
         Self {
             kernel_satp: PhysPageNum::new(0), kernel_sp: 0, kernel_trap: 0, epc: 0,
@@ -57,6 +74,10 @@ impl TrapFrame {
     }
 }
 
+/// Kernel context for context switching.
+/// 
+/// Only contains callee-saved registers needed to resume a kernel thread.
+/// Caller-saved registers are not preserved across context switch.
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Context {
@@ -77,6 +98,7 @@ pub struct Context {
 }
 
 impl Context {
+    /// Create a zeroed context.
     pub const fn new() -> Self {
         Self { ra: 0, sp: 0, s0: 0, s1: 0, s2: 0, s3: 0,
                s4: 0, s5: 0, s6: 0, s7: 0, s8: 0, s9: 0,
@@ -92,15 +114,21 @@ unsafe extern "C" {
     fn swtch(old: *mut Context, new: *const Context);
 }
 
-/// Address of the kernelvec trap handler
+/// Get the address of the kernelvec trap handler.
 pub fn kernelvec_addr() -> usize {
     kernelvec as usize
 }
 
+/// Switch from one context to another.
+/// 
+/// Called from scheduler to switch between processes.
 pub fn context_switch(old: &mut Context, new: &Context) {
     unsafe { swtch(old as *mut Context, new as *const Context) }
 }
 
+/// Prepare trap frame for return to user mode.
+/// 
+/// Sets up stvec, sstatus, and sepc for the userret trampoline.
 pub fn prepare_return(tf: &mut TrapFrame) {
     intr_off();
     let trampoline_uservec = TRAMPOLINE + (uservec as usize - TRAMPOLINE);
@@ -116,6 +144,10 @@ pub fn prepare_return(tf: &mut TrapFrame) {
     w_sepc(tf.epc);
 }
 
+/// User mode trap handler.
+/// 
+/// Called from `uservec` trampoline. Handles syscalls, interrupts, and page faults.
+/// Returns the kernel `satp` value for the trampoline to load.
 #[unsafe(no_mangle)]
 pub extern "C" fn usertrap() -> usize {
     // Save user PC
@@ -141,10 +173,10 @@ pub extern "C" fn usertrap() -> usize {
             if crate::proc::is_killed(p) {
                 crate::proc::kexit(-1);
             }
-{
-            let mut inner = p.lock();
-            unsafe { inner.trapframe.as_mut().unwrap().epc += 4; }
-        }
+            {
+                let mut inner = p.lock();
+                unsafe { inner.trapframe.as_mut().unwrap().epc += 4; }
+            }
             intr_on();
             crate::syscall::syscall();
         }
@@ -191,6 +223,10 @@ pub extern "C" fn usertrap() -> usize {
     satp
 }
 
+/// Kernel mode trap handler.
+/// 
+/// Called from `kernelvec` trampoline. Handles timer interrupts and device interrupts.
+/// Panics on unexpected traps.
 #[unsafe(no_mangle)]
 pub extern "C" fn kerneltrap() {
     let sepc = r_sepc();

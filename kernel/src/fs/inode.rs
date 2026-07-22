@@ -1,4 +1,9 @@
 // kernel/src/fs/inode.rs
+//! Inode management and file system operations.
+//!
+//! Implements the inode layer: in-memory inodes, disk inode format,
+//! directory operations, block allocation, and the inode cache.
+
 use crate::sync::spinlock::{SpinLock, SpinLockGuard};
 use crate::sync::sleeplock::SleepLock;
 use crate::fs::buf::{bread, brelse, bwrite, BSIZE};
@@ -6,22 +11,38 @@ use crate::fs::log::{begin_op, end_op, SuperBlock};
 use alloc::vec::Vec;
 use core::str;
 
+/// Number of direct block pointers in an inode.
 pub const NDIRECT: usize = 12;
+
+/// Number of indirect block pointers (one block of u32s).
 pub const NINDIRECT: usize = BSIZE / 4;
+
+/// Maximum file size in blocks (direct + indirect).
 pub const MAXFILE: usize = NDIRECT + NINDIRECT;
 
+/// On-disk inode structure.
+/// 
+/// Matches the C xv6 layout exactly for disk compatibility.
+/// 64 bytes total.
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct DiskInode {
+    /// File type (0=free, 1=dir, 2=file, 3=device)
     pub typ: u16,
+    /// Major device number (for device files)
     pub major: u16,
+    /// Minor device number (for device files)
     pub minor: u16,
+    /// Number of directory links
     pub nlink: u16,
+    /// File size in bytes
     pub size: u32,
+    /// Block addresses (12 direct + 1 indirect)
     pub addrs: [u32; NDIRECT + 1],
 }
 
 impl DiskInode {
+    /// Create a zeroed disk inode.
     pub fn new() -> Self {
         Self {
             typ: 0,
@@ -34,11 +55,16 @@ impl DiskInode {
     }
 }
 
+/// In-memory inode type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InodeType {
+    /// Unallocated
     None = 0,
+    /// Directory
     Dir = 1,
+    /// Regular file
     File = 2,
+    /// Device file
     Device = 3,
 }
 
@@ -54,6 +80,11 @@ impl From<u16> for InodeType {
     }
 }
 
+/// In-memory inode.
+/// 
+/// Uses two locks:
+/// - `lock` (SleepLock): For operations that may sleep (I/O)
+/// - `spinlock` (SpinLock): For quick metadata access
 pub struct Inode {
     lock: SleepLock<()>,
     spinlock: SpinLock<InodeInner>,
@@ -62,6 +93,7 @@ pub struct Inode {
     refcnt: usize,
 }
 
+/// Mutable inode metadata protected by `spinlock`.
 pub struct InodeInner {
     pub typ: InodeType,
     pub major: u16,
@@ -72,6 +104,7 @@ pub struct InodeInner {
 }
 
 impl Inode {
+    /// Create a new uninitialized inode.
     pub fn new(dev: u32, inum: u32) -> Self {
         Self {
             lock: SleepLock::new((), "inode"),
@@ -89,70 +122,98 @@ impl Inode {
         }
     }
     
+    /// Acquire the sleep lock (for I/O operations).
     pub fn lock(&self) -> crate::sync::sleeplock::SleepLockGuard<()> { 
         self.lock.acquire() 
     }
     
+    /// Release the sleep lock.
     pub fn unlock(&self) {
         self.lock.release();
     }
     
+    /// Get the device number.
     pub fn dev(&self) -> u32 { self.dev }
+    
+    /// Get the inode number.
     pub fn inum(&self) -> u32 { self.inum }
+    
+    /// Get the reference count.
     pub fn refcnt(&self) -> usize { self.refcnt }
     
+    /// Acquire the spinlock for metadata access.
     pub fn inner(&self) -> SpinLockGuard<InodeInner> {
         self.spinlock.acquire()
     }
     
+    /// Get the inode type.
     pub fn typ(&self) -> InodeType {
         self.inner().typ
     }
     
+    /// Get the file size.
     pub fn size(&self) -> u32 {
         self.inner().size
     }
     
+    /// Get the link count.
     pub fn nlink(&self) -> u16 {
         self.inner().nlink
     }
     
+    /// Set the link count.
     pub fn set_nlink(&self, n: u16) {
         self.inner().nlink = n;
     }
     
+    /// Increment the link count.
     pub fn inc_nlink(&self) {
         self.inner().nlink += 1;
     }
     
+    /// Decrement the link count.
     pub fn dec_nlink(&self) {
         self.inner().nlink -= 1;
     }
     
+    /// Set the file size.
     pub fn set_size(&self, size: u32) {
         self.inner().size = size;
     }
     
+    /// Get the block addresses.
     pub fn addrs(&self) -> [u32; NDIRECT + 1] {
         self.inner().addrs
     }
     
+    /// Set the block addresses.
     pub fn set_addrs(&self, addrs: [u32; NDIRECT + 1]) {
         self.inner().addrs = addrs;
     }
     
+    /// Set the inode type.
     pub fn set_type(&self, typ: InodeType) {
         self.inner().typ = typ;
     }
     
+    /// Set the major device number.
     pub fn set_major(&self, major: u16) {
         self.inner().major = major;
     }
     
+    /// Set the minor device number.
     pub fn set_minor(&self, minor: u16) {
         self.inner().minor = minor;
     }
 
+    /// Read data from the inode.
+    /// 
+    /// # Arguments
+    /// * `dst` - Destination buffer
+    /// * `off` - Offset in file
+    /// * `n` - Number of bytes to read
+    /// 
+    /// Returns number of bytes read (0 at EOF).
     pub fn read(&self, dst: &mut [u8], off: usize, n: usize) -> usize {
         let _lock = self.lock();
         let inner = self.inner();
@@ -187,6 +248,15 @@ impl Inode {
         total
     }
 
+    /// Write data to the inode.
+    /// 
+    /// # Arguments
+    /// * `src` - Source buffer
+    /// * `off` - Offset in file
+    /// * `n` - Number of bytes to write
+    /// 
+    /// Returns number of bytes written (may be less than `n` if disk full).
+    /// Allocates blocks as needed.
     pub fn write(&self, src: &[u8], off: usize, n: usize) -> usize {
         let _lock = self.lock();
         let mut inner = self.inner();
@@ -238,6 +308,9 @@ impl Inode {
         total
     }
 
+    /// Truncate the inode to zero length.
+    /// 
+    /// Frees all data blocks and resets size to 0.
     pub fn truncate(&self) {
         let _lock = self.lock();
         let mut inner = self.inner();

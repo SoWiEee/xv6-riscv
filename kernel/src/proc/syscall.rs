@@ -14,6 +14,7 @@ use crate::printk;
 use core::fmt::Arguments;
 use alloc::vec::Vec;
 use alloc::string::String;
+use alloc::sync::Arc;
 
 // System call numbers
 pub const SYS_FORK: usize = 1;
@@ -39,7 +40,7 @@ pub const SYS_LINK: usize = 20;
 pub const SYS_MKDIR: usize = 21;
 pub const SYS_MAX: usize = 21;
 
-pub fn syscall() {
+pub fn proc_syscall() {
     let p = current_process();
     let tf = unsafe { &mut *p.lock().trapframe };
     let num = tf.a7;
@@ -111,12 +112,12 @@ fn sys_fork() -> isize {
     // Copy file descriptors
     for i in 0..16 {
         if let Some(f) = &pinner.ofile[i] {
-            npinner.ofile[i] = Some(filedup(f));
+            npinner.ofile[i] = Some(Arc::new(filedup(&f)));
         }
     }
     
     // Copy cwd
-    npinner.cwd = pinner.cwd.clone();
+    npinner.cwd = pinner.cwd;
     
     // Copy name
     npinner.name = pinner.name;
@@ -139,7 +140,7 @@ pub fn sys_exit(code: i32) -> ! {
     // Close all open files
     for i in 0..16 {
         if let Some(f) = inner.ofile[i].take() {
-            fileclose(f);
+            fileclose(&f);
         }
     }
     
@@ -240,8 +241,8 @@ fn sys_pipe(fd0: usize, fd1: usize) -> isize {
     let read_file = crate::fs::File::new_pipe(pipe.clone(), true, false);
     let write_file = crate::fs::File::new_pipe(pipe, false, true);
     
-    inner.ofile[read_fd] = Some(read_file);
-    inner.ofile[write_fd] = Some(write_file);
+    inner.ofile[read_fd] = Some(Arc::new(read_file));
+    inner.ofile[write_fd] = Some(Arc::new(write_file));
     
     drop(inner);
     
@@ -273,7 +274,7 @@ fn sys_read(fd: usize, addr: usize, n: usize) -> isize {
         return -1;
     }
     
-    let f = filedup(inner.ofile[fd].as_ref().unwrap());
+    let f = Arc::new(filedup(&inner.ofile[fd].as_ref().unwrap()));
     let pagetable = inner.pagetable.clone();
     drop(inner);
     
@@ -296,7 +297,7 @@ fn sys_write(fd: usize, addr: usize, n: usize) -> isize {
         return -1;
     }
     
-    let f = filedup(inner.ofile[fd].as_ref().unwrap());
+    let f = Arc::new(filedup(&inner.ofile[fd].as_ref().unwrap()));
     let pagetable = inner.pagetable.clone();
     drop(inner);
     
@@ -322,7 +323,7 @@ fn sys_close(fd: usize) -> isize {
     let f = inner.ofile[fd].take().unwrap();
     drop(inner);
     
-    fileclose(f);
+    fileclose(&f);
     0
 }
 
@@ -477,7 +478,7 @@ fn sys_fstat(fd: usize, addr: usize) -> isize {
         return -1;
     }
     
-    let f = crate::fs::filedup(inner.ofile[fd].as_ref().unwrap());
+    let f = Arc::new(crate::fs::filedup(&inner.ofile[fd].as_ref().unwrap()));
     let pagetable = inner.pagetable.clone();
     drop(inner);
     
@@ -542,7 +543,7 @@ fn sys_chdir(path: usize) -> isize {
     // Update cwd
     let p = current_process();
     let mut inner = p.lock();
-    inner.cwd = Some(inode);
+    inner.cwd = Some(inode as *const Inode);
     0
 }
 
@@ -554,7 +555,7 @@ fn sys_dup(fd: usize) -> isize {
         return -1;
     }
     
-    let f = filedup(inner.ofile[fd].as_ref().unwrap());
+    let f = Arc::new(filedup(&inner.ofile[fd].as_ref().unwrap()));
     
     // Find free fd
     for i in 0..16 {
@@ -563,6 +564,7 @@ fn sys_dup(fd: usize) -> isize {
             return i as isize;
         }
     }
+    // f goes out of scope here, Arc drops
     -1
 }
 
@@ -708,9 +710,10 @@ fn sys_open(path: usize, flags: usize, mode: usize) -> isize {
     // Find free fd
     let p = current_process();
     let mut inner = p.lock();
+    let file_arc = Arc::new(file);
     for i in 0..16 {
         if inner.ofile[i].is_none() {
-            inner.ofile[i] = Some(file);
+            inner.ofile[i] = Some(file_arc);
             return i as isize;
         }
     }

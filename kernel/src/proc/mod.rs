@@ -10,8 +10,10 @@ use crate::arch::asm::r_tp;
 use crate::sync::spinlock::{SpinLock, SpinLockGuard};
 use crate::mm::page_table::PageTable;
 use crate::mm::address::PhysPageNum;
+use crate::fs::Inode;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+use alloc::sync::Arc;
 use core::sync::atomic::AtomicUsize;
 
 pub struct Cpu {
@@ -105,7 +107,7 @@ pub fn userinit() {
     // Set cwd
     crate::fs::iinit();
     if let Ok(inode) = crate::fs::namei("/") {
-        inner.cwd = Some(inode);
+        inner.cwd = Some(inode as *const Inode);
     }
     
     drop(inner);

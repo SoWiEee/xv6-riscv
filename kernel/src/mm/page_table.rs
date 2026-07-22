@@ -1,9 +1,24 @@
 // kernel/src/mm/page_table.rs
+//! Sv39 page table management.
+//!
+//! Implements 3-level page tables (Sv39) with 4KB pages. Each level has 512 entries.
+//! Page table entries are 64-bit with standard RISC-V flags.
+
 use super::address::{PhysAddr, PhysPageNum, VirtAddr};
 use super::frame_allocator::{alloc_page, free_page};
 use crate::arch::paging::{PageTableEntry, PageTableWalker, PAGE_SIZE, PTE_V, PTE_R, PTE_W, PTE_X, PTE_U};
 use crate::arch::asm::sfence_vma;
 
+/// A Sv39 page table.
+/// 
+/// Owns the root page table page and all descendant pages. When dropped,
+/// recursively frees all allocated page table pages and mapped physical pages.
+/// 
+/// # Example
+/// ```
+/// let mut pt = PageTable::new()?;
+/// pt.map(VirtAddr(0x1000), PhysAddr(0x80000000), PTE_R | PTE_W | PTE_V)?;
+/// ```
 #[derive(Clone)]
 pub struct PageTable {
     root_ppn: PhysPageNum,
@@ -11,6 +26,10 @@ pub struct PageTable {
 }
 
 impl PageTable {
+    /// Create a new empty page table.
+    /// 
+    /// Allocates and zeroes the root page table page.
+    /// Returns an error if physical memory is exhausted.
     pub fn new() -> Result<Self, &'static str> {
         let root = alloc_page()?;
         // Zero the page
@@ -19,12 +38,24 @@ impl PageTable {
         Ok(Self { root_ppn: root, walker })
     }
     
+    /// Create a page table from an existing root page number.
+    /// 
+    /// Does not allocate a new root page; caller must ensure `root_ppn` is valid.
     pub fn from_root(root_ppn: PhysPageNum) -> Self {
         Self { root_ppn, walker: PageTableWalker::new(root_ppn) }
     }
     
+    /// Get the root physical page number.
     pub fn root_ppn(&self) -> PhysPageNum { self.root_ppn }
     
+    /// Map a virtual page to a physical page.
+    /// 
+    /// # Arguments
+    /// * `vaddr` - Virtual address (must be page-aligned)
+    /// * `paddr` - Physical address (must be page-aligned)
+    /// * `flags` - PTE flags (R, W, X, U, etc.) - V flag added automatically
+    /// 
+    /// Returns error if already mapped or allocation fails.
     pub fn map(&mut self, vaddr: VirtAddr, paddr: PhysAddr, flags: u64) -> Result<(), &'static str> {
         let pte = self.walker.walk(vaddr, true).ok_or("walk failed")?;
         if pte.is_valid() { return Err("remap"); }
@@ -33,6 +64,9 @@ impl PageTable {
         Ok(())
     }
     
+    /// Unmap a virtual page and free the physical page.
+    /// 
+    /// Does nothing if the page is not mapped.
     pub fn unmap(&mut self, vaddr: VirtAddr) {
         if let Some(pte) = self.walker.walk(vaddr, false) {
             if pte.is_valid() {
@@ -43,6 +77,9 @@ impl PageTable {
         }
     }
     
+    /// Translate a virtual address to a physical address.
+    /// 
+    /// Returns `None` if not mapped or invalid.
     pub fn translate(&self, vaddr: VirtAddr) -> Option<PhysAddr> {
         let pte = self.walker.walk(vaddr, false)?;
         if !pte.is_valid() { return None; }
@@ -50,8 +87,10 @@ impl PageTable {
         Some(PhysAddr(pa))
     }
     
+    /// Deep copy page table entries from another page table.
+    /// 
+    /// Allocates new physical pages and copies data. Used for fork().
     pub fn copy_from(&mut self, src: &PageTable, size: usize) -> Result<(), &'static str> {
-        // Deep copy of user page table
         for vpn in 0..(size / PAGE_SIZE) {
             let vaddr = VirtAddr(vpn * PAGE_SIZE);
             if let Some(src_pte) = src.walker.walk(vaddr, false) {
@@ -67,6 +106,9 @@ impl PageTable {
         Ok(())
     }
     
+    /// Activate this page table by writing to `satp` CSR.
+    /// 
+    /// Also executes `sfence.vma` to flush TLB.
     pub fn activate(&self) {
         crate::arch::asm::w_satp(crate::arch::asm::MAKE_SATP(self.root_ppn.0));
         sfence_vma();
@@ -74,8 +116,8 @@ impl PageTable {
 }
 
 impl Drop for PageTable {
+    /// Recursively free all page table pages and mapped physical pages.
     fn drop(&mut self) {
-        // Recursively free all page table pages
         self.free_walk(self.root_ppn);
     }
 }
@@ -99,15 +141,20 @@ impl PageTable {
 
 use spin::Once;
 
+/// Global kernel page table (initialized once).
 pub static KERNEL_PAGETABLE: Once<PageTable> = Once::new();
 
+/// Get the kernel page table root PPN for `satp`.
 pub fn kernel_pagetable() -> PhysPageNum {
     KERNEL_PAGETABLE.get().unwrap().root_ppn()
 }
 
+/// Initialize the kernel page table.
+/// 
+/// Maps: UART, Virtio, PLIC, kernel text (RX), kernel data (RW),
+/// trampoline page, and kernel stacks.
 pub fn kvminit() {
     let mut pt = PageTable::new().expect("kvminit: failed to create kernel page table");
-    // Map devices, kernel text/data, trampoline, kernel stacks
     map_kernel(&mut pt);
     KERNEL_PAGETABLE.call_once(|| pt);
 }
@@ -158,11 +205,12 @@ fn map_kernel(pt: &mut PageTable) {
     }
 }
 
+/// Activate the kernel page table on the current hart.
 pub fn kvminithart() {
     KERNEL_PAGETABLE.get().unwrap().activate();
 }
 
-// For user page table creation
+/// Create a new user page table with trampoline mapped.
 pub fn uvmcreate() -> Result<PageTable, &'static str> {
     let mut pt = PageTable::new()?;
     // Map trampoline
@@ -170,6 +218,14 @@ pub fn uvmcreate() -> Result<PageTable, &'static str> {
     Ok(pt)
 }
 
+/// Allocate and map physical pages for user virtual address range.
+/// 
+/// # Arguments
+/// * `pt` - Page table to modify
+/// * `old_sz` - Current size of user memory
+/// * `new_sz` - New size (must be >= old_sz)
+/// 
+/// Maps pages with R/W/U/X permissions.
 pub fn uvmalloc(pt: &mut PageTable, old_sz: usize, new_sz: usize) -> Result<(), &'static str> {
     if new_sz <= old_sz {
         return Ok(());
@@ -182,12 +238,16 @@ pub fn uvmalloc(pt: &mut PageTable, old_sz: usize, new_sz: usize) -> Result<(), 
     Ok(())
 }
 
+/// Free user page table mappings up to size.
 pub fn uvmfree(pt: &mut PageTable, sz: usize) {
     for vaddr in (0..sz).step_by(PAGE_SIZE) {
         pt.unmap(VirtAddr(vaddr));
     }
 }
 
+/// Copy user page table (for fork).
+/// 
+/// Deep copies all mapped pages, allocating new physical pages.
 pub fn uvmcopy(src: &PageTable, dst: &mut PageTable, sz: usize) -> Result<(), &'static str> {
     for vaddr in (0..sz).step_by(PAGE_SIZE) {
         let va = VirtAddr(vaddr);

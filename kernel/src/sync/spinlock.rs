@@ -1,11 +1,36 @@
 // kernel/src/sync/spinlock.rs
+//! Spinlock with interrupt disable for mutual exclusion in interrupt contexts.
+//!
+//! This is the primary synchronization primitive for kernel code that may be
+//! called from interrupt handlers. It disables interrupts on the local CPU
+//! while held to prevent deadlocks.
+
 use crate::arch::asm::{intr_on, intr_off, intr_get, r_tp};
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicBool, Ordering};
 
+/// A mutual exclusion lock that disables interrupts while held.
+/// 
+/// Uses a simple spin-wait with atomic compare-and-swap. When acquired,
+/// interrupts are disabled on the current CPU (via `push_off`/`pop_off`)
+/// to prevent deadlock if an interrupt handler tries to acquire the same lock.
+/// 
+/// # Type Parameters
+/// * `T` - The data protected by this lock. Must be `Send`.
+/// 
+/// # Example
+/// ```
+/// let lock = SpinLock::new(0, "counter");
+/// {
+///     let mut guard = lock.acquire();
+///     *guard += 1;
+/// } // Lock released automatically here
+/// ```
 pub struct SpinLock<T> {
+    /// Atomic flag indicating if lock is held.
     pub locked: AtomicBool,
+    /// Lock name for debugging.
     pub name: &'static str,
     data: UnsafeCell<T>,
     cpu: UnsafeCell<usize>,   // For debugging: which CPU holds the lock
@@ -15,6 +40,7 @@ unsafe impl<T> Sync for SpinLock<T> where T: Send {}
 unsafe impl<T> Send for SpinLock<T> where T: Send {}
 
 impl<T> SpinLock<T> {
+    /// Create a new spinlock protecting `data` with the given `name`.
     pub const fn new(data: T, name: &'static str) -> Self {
         Self {
             locked: AtomicBool::new(false),
@@ -24,6 +50,10 @@ impl<T> SpinLock<T> {
         }
     }
     
+    /// Acquire the lock, spinning until available.
+    /// 
+    /// Disables interrupts on the current CPU. Returns a guard that releases
+    /// the lock and restores interrupts when dropped.
     pub fn acquire(&self) -> SpinLockGuard<'_, T> {
         push_off();
         while self.locked.swap(true, Ordering::Acquire) {
@@ -33,6 +63,10 @@ impl<T> SpinLock<T> {
         SpinLockGuard { lock: self }
     }
     
+    /// Try to acquire the lock without spinning.
+    /// 
+    /// Returns `Some(guard)` if successful, `None` if lock is held.
+    /// Disables interrupts on success.
     pub fn try_acquire(&self) -> Option<SpinLockGuard<'_, T>> {
         push_off();
         if self.locked.swap(true, Ordering::Acquire) {
@@ -44,11 +78,17 @@ impl<T> SpinLock<T> {
         }
     }
     
+    /// Check if the current CPU holds this lock.
+    /// 
+    /// Used for debugging assertions.
     pub fn holding(&self) -> bool {
         self.locked.load(Ordering::Relaxed) && unsafe { *self.cpu.get() } == r_tp()
     }
 }
 
+/// RAII guard that releases the spinlock on drop.
+/// 
+/// Implements `Deref` and `DerefMut` for transparent access to protected data.
 pub struct SpinLockGuard<'a, T> {
     lock: &'a SpinLock<T>,
 }
@@ -74,7 +114,9 @@ impl<'a, T> DerefMut for SpinLockGuard<'a, T> {
     }
 }
 
-/// Push interrupt disable nesting
+/// Disable interrupts and increment nesting counter.
+/// 
+/// Called by `acquire()` and `try_acquire()`. Must be paired with `pop_off()`.
 pub fn push_off() {
     let intr = intr_get();
     intr_off();
@@ -86,7 +128,9 @@ pub fn push_off() {
     }
 }
 
-/// Pop interrupt disable nesting
+/// Decrement nesting counter and restore interrupts if zero.
+/// 
+/// Called by `SpinLockGuard::drop()` and `release_raw()`.
 pub fn pop_off() {
     let cpu = crate::proc::mycpu();
     if cpu.noff == 0 {
@@ -98,8 +142,11 @@ pub fn pop_off() {
     }
 }
 
-/// Release a spinlock without a guard (for sleep/wakeup)
-/// SAFETY: Caller must ensure the lock is actually held
+/// Release a spinlock without a guard (for sleep/wakeup).
+/// 
+/// # Safety
+/// Caller must ensure the lock is actually held by the current CPU
+/// and that interrupts were disabled via `push_off()`.
 pub unsafe fn release_raw(lock: &AtomicBool) {
     lock.store(false, Ordering::Release);
     pop_off();

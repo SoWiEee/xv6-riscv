@@ -1,4 +1,9 @@
 // user-lib/src/lib.rs
+//! User-space library for xv6-riscv Rust programs.
+//!
+//! Provides syscall interface, standard I/O, string operations,
+//! file system access, and process management for user programs.
+
 #![no_std]
 extern crate alloc;
 
@@ -11,7 +16,9 @@ pub mod process;
 // Re-export macros (they're already exported via #[macro_export])
 // pub use stdio::{print, println};
 
-// Syscall numbers matching xv6
+/// Syscall numbers matching C xv6.
+/// 
+/// These must match the kernel's syscall numbers exactly for binary compatibility.
 pub const SYS_FORK: usize = 1;
 pub const SYS_EXIT: usize = 2;
 pub const SYS_WAIT: usize = 3;
@@ -34,7 +41,16 @@ pub const SYS_UNLINK: usize = 19;
 pub const SYS_LINK: usize = 20;
 pub const SYS_MKDIR: usize = 21;
 
-// Syscall macro
+/// Syscall macro for making system calls.
+/// 
+/// Generates inline assembly `ecall` instructions with the appropriate
+/// register setup. Supports 0-6 arguments (a0-a5) with syscall number in a7.
+/// 
+/// # Example
+/// ```
+/// let pid = syscall!(SYS_GETPID);
+/// let fd = syscall!(SYS_OPEN, path_ptr, flags);
+/// ```
 #[macro_export]
 macro_rules! syscall {
     ($num:expr) => {{
@@ -156,6 +172,10 @@ use linked_list_allocator::LockedHeap;
 #[global_allocator]
 static ALLOCATOR: LockedHeap = LockedHeap::empty();
 
+/// Initialize the user heap.
+/// 
+/// Allocates 1MB of heap space via `sbrk` syscall and initializes
+/// the global allocator. Must be called before any allocation.
 pub fn init_heap() {
     use crate::syscall::sbrk;
     const HEAP_SIZE: usize = 1024 * 1024; // 1MB

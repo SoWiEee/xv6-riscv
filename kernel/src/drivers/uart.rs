@@ -1,18 +1,25 @@
 // kernel/src/drivers/uart.rs
+//! 16550 UART driver for console output and input.
+//!
+//! Memory-mapped at 0x10000000. Used for kernel printk and user console I/O.
+
 use crate::arch::asm::{intr_on, intr_off};
 use core::fmt::{self, Write};
 
 const UART0: usize = 0x10000000;
-const UART_THR: usize = 0;
-const UART_RHR: usize = 0;
-const UART_IER: usize = 1;
-const UART_FCR: usize = 2;
-const UART_LCR: usize = 3;
-const UART_MCR: usize = 4;
-const UART_LSR: usize = 5;
-const UART_LSR_RX: u8 = 1;
-const UART_LSR_TX: u8 = 32;
+const UART_THR: usize = 0;      // Transmitter Holding Register
+const UART_RHR: usize = 0;      // Receiver Holding Register
+const UART_IER: usize = 1;      // Interrupt Enable Register
+const UART_FCR: usize = 2;      // FIFO Control Register
+const UART_LCR: usize = 3;      // Line Control Register
+const UART_MCR: usize = 4;      // Modem Control Register
+const UART_LSR: usize = 5;      // Line Status Register
+const UART_LSR_RX: u8 = 1;      // Data ready
+const UART_LSR_TX: u8 = 32;     // Transmitter empty
 
+/// Initialize the UART.
+/// 
+/// Sets up 38400 baud, 8N1, enables FIFO and RX interrupt.
 pub fn uart_init() {
     unsafe {
         let uart = UART0 as *mut u8;
@@ -32,6 +39,9 @@ pub fn uart_init() {
     }
 }
 
+/// Output a character to the UART (polling).
+/// 
+/// Spins until transmitter is ready.
 pub fn uart_putc(c: u8) {
     unsafe {
         let uart = UART0 as *mut u8;
@@ -42,6 +52,9 @@ pub fn uart_putc(c: u8) {
     }
 }
 
+/// Read a character from the UART (non-blocking).
+/// 
+/// Returns `Some(c)` if a character is available, `None` otherwise.
 pub fn uart_getc() -> Option<u8> {
     unsafe {
         let uart = UART0 as *mut u8;
@@ -53,12 +66,18 @@ pub fn uart_getc() -> Option<u8> {
     }
 }
 
+/// UART interrupt handler.
+/// 
+/// Reads all available characters and passes them to the console.
 pub fn uart_intr() {
     while let Some(c) = uart_getc() {
         crate::drivers::console::console_intr(c);
     }
 }
 
+/// Writer implementation for `core::fmt::Write`.
+/// 
+/// Used by `printk` for formatted output.
 pub struct UartWriter;
 
 impl Write for UartWriter {
@@ -70,6 +89,9 @@ impl Write for UartWriter {
     }
 }
 
+/// Print formatted string to UART (with interrupts disabled).
+/// 
+/// Used for kernel debugging output.
 pub fn printk(args: fmt::Arguments) {
     intr_off();
     UartWriter.write_fmt(args).unwrap();

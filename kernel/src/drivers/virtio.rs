@@ -1,4 +1,9 @@
 // kernel/src/drivers/virtio.rs
+//! Virtio block device driver.
+//!
+//! Implements the virtio 1.0 block device interface using memory-mapped I/O
+//! at VIRTIO0 (0x10001000). Uses a simple single-queue design with 8 descriptors.
+
 use crate::arch::asm::VIRTIO0;
 use crate::arch::interrupt::plic_init_hart;
 use crate::mm::frame_allocator::alloc_page;
@@ -83,6 +88,9 @@ struct VirtioBlkReq {
 static mut REQ: VirtioBlkReq = VirtioBlkReq { type_: 0, reserved: 0, sector: 0 };
 static mut STATUS: u8 = 0;
 
+/// Initialize the virtio block device.
+/// 
+/// Negotiates features, allocates queue pages, and enables interrupts.
 pub fn virtio_init() {
     unsafe {
         let v = VIRTIO0 as *mut u32;
@@ -132,12 +140,21 @@ pub fn virtio_init() {
     }
 }
 
-/// Simple block buffer for virtio operations
+/// Block buffer for virtio read/write operations.
+/// 
+/// Contains a 512-byte sector buffer and the sector number.
 pub struct Block {
     pub blockno: u64,
     pub data: [u8; 512],
 }
 
+/// Read or write a block via virtio.
+/// 
+/// # Arguments
+/// * `block` - Buffer containing sector number and data
+/// * `write` - `true` for write, `false` for read
+/// 
+/// Blocks until the operation completes.
 pub fn virtio_rw(block: &mut Block, write: bool) {
     unsafe {
         // Wait for free descriptor
@@ -197,6 +214,9 @@ pub fn virtio_rw(block: &mut Block, write: bool) {
     }
 }
 
+/// Virtio interrupt handler.
+/// 
+/// Acknowledges the interrupt and processes the used ring.
 pub fn virtio_intr() {
     unsafe {
         let v = VIRTIO0 as *mut u32;
