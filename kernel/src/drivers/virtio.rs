@@ -90,9 +90,10 @@ pub fn virtio_init() {
         let magic = v.add(VIRTIO_MMIO_MAGIC_VALUE / 4).read_volatile();
         let version = v.add(VIRTIO_MMIO_VERSION / 4).read_volatile();
         let device_id = v.add(VIRTIO_MMIO_DEVICE_ID / 4).read_volatile();
-        assert_eq!(magic, 0x74726976); // "virt"
-        assert_eq!(version, 2);
-        assert_eq!(device_id, 2); // block device
+        
+        if magic != 0x74726976 || version != 2 || device_id != 2 {
+            return;
+        }
         
         // Reset
         v.add(VIRTIO_MMIO_STATUS / 4).write_volatile(0);

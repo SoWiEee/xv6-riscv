@@ -4,6 +4,7 @@ use super::frame_allocator::{alloc_page, free_page};
 use crate::arch::paging::{PageTableEntry, PageTableWalker, PAGE_SIZE, PTE_V, PTE_R, PTE_W, PTE_X, PTE_U};
 use crate::arch::asm::sfence_vma;
 
+#[derive(Clone)]
 pub struct PageTable {
     root_ppn: PhysPageNum,
     walker: PageTableWalker,
@@ -136,10 +137,11 @@ fn map_kernel(pt: &mut PageTable) {
     }
     
     // Map kernel data (RW)
-    let data_pages = (end - etext + PAGE_SIZE - 1) / PAGE_SIZE;
+    let data_start = (etext + PAGE_SIZE - 1) & !(PAGE_SIZE - 1); // Page align up
+    let data_pages = (end - data_start + PAGE_SIZE - 1) / PAGE_SIZE;
     for i in 0..data_pages {
-        let vaddr = VirtAddr(etext + i * PAGE_SIZE);
-        let paddr = PhysAddr(etext + i * PAGE_SIZE);
+        let vaddr = VirtAddr(data_start + i * PAGE_SIZE);
+        let paddr = PhysAddr(data_start + i * PAGE_SIZE);
         pt.map(vaddr, paddr, PTE_R | PTE_W).unwrap();
     }
     

@@ -57,7 +57,7 @@ pub fn getchar() -> Option<u8> {
     }
 }
 
-struct UartWriter;
+pub struct UartWriter;
 
 impl Write for UartWriter {
     fn write_str(&mut self, s: &str) -> fmt::Result {

@@ -9,6 +9,10 @@ static HEAP: [u8; KERNEL_HEAP_SIZE] = [0; KERNEL_HEAP_SIZE];
 #[global_allocator]
 static ALLOCATOR: LockedHeap<32> = LockedHeap::<32>::empty();
 
+// Maximum number of physical pages (128MB / 4KB = 32768)
+const MAX_PHYS_PAGES: usize = 32768;
+static mut FREE_LIST_STORAGE: [PhysPageNum; MAX_PHYS_PAGES] = [PhysPageNum::new(0); MAX_PHYS_PAGES];
+
 pub static FRAME_ALLOCATOR: SpinLock<FrameAllocator> = SpinLock::new(FrameAllocator::new(), "frame_allocator");
 
 pub struct FrameAllocator {
@@ -27,9 +31,10 @@ impl FrameAllocator {
         self.start_ppn = start.ceil();
         self.end_ppn = end.floor();
         let total = self.end_ppn.0 - self.start_ppn.0;
-        // Use first page for free list array
-        let list_ptr = self.start_ppn.to_paddr().0 as *mut PhysPageNum;
-        self.free_list = unsafe { core::slice::from_raw_parts_mut(list_ptr, total) };
+        
+        // Use static array for free list
+        let free_list = unsafe { &mut FREE_LIST_STORAGE[..total] };
+        self.free_list = free_list;
         self.free_count = 0;
         for i in self.start_ppn.0..self.end_ppn.0 {
             self.free_list[self.free_count] = PhysPageNum::new(i);

@@ -87,7 +87,7 @@ impl Context {
 // Assembly functions - declare as public extern
 unsafe extern "C" {
     fn uservec();
-    fn userret();
+    pub fn userret();
     fn kernelvec();
     fn swtch(old: *mut Context, new: *const Context);
 }
@@ -130,14 +130,21 @@ pub extern "C" fn usertrap() -> usize {
     }
     
     w_stvec(kernelvec as usize);
-    p.trapframe.epc = sepc;
+    
+    {
+        let mut inner = p.lock();
+        unsafe { inner.trapframe.as_mut().unwrap().epc = sepc; }
+    }
     
     match scause {
         8 => { // syscall
             if crate::proc::is_killed(p) {
                 crate::proc::kexit(-1);
             }
-            p.trapframe.epc += 4;
+{
+            let mut inner = p.lock();
+            unsafe { inner.trapframe.as_mut().unwrap().epc += 4; }
+        }
             intr_on();
             crate::syscall::syscall();
         }
@@ -147,16 +154,23 @@ pub extern "C" fn usertrap() -> usize {
         }
         13 | 15 => { // page fault
             let read = scause == 13;
-            if crate::mm::page_fault::handle_page_fault(
-                &mut crate::mm::page_table::PageTable::from_root(p.pagetable), 
-                stval, 
-                read
-            ).is_err() {
-                crate::proc::set_killed(p);
+            let pt = {
+                let inner = p.lock();
+                inner.pagetable.as_ref().map(|pt| pt.root_ppn())
+            };
+            if let Some(root_ppn) = pt {
+                if crate::mm::page_fault::handle_page_fault(
+                    &mut crate::mm::page_table::PageTable::from_root(root_ppn), 
+                    stval, 
+                    read
+                ).is_err() {
+                    crate::proc::set_killed(p);
+                }
             }
         }
         _ => {
-            crate::arch::console::printk(format_args!("usertrap: unexpected scause {:#x} pid={}\n", scause, p.pid));
+            let pid = p.pid();
+            crate::arch::console::printk(format_args!("usertrap: unexpected scause {:#x} pid={}\n", scause, pid));
             crate::proc::set_killed(p);
         }
     }
@@ -165,8 +179,16 @@ pub extern "C" fn usertrap() -> usize {
         crate::proc::kexit(-1);
     }
     
-    prepare_return(&mut p.trapframe);
-    MAKE_SATP(p.pagetable.0)
+    {
+        let mut inner = p.lock();
+        unsafe { prepare_return(inner.trapframe.as_mut().unwrap()); }
+    }
+    
+    let satp = {
+        let inner = p.lock();
+        inner.pagetable.as_ref().map(|pt| MAKE_SATP(pt.root_ppn().0)).unwrap_or(0)
+    };
+    satp
 }
 
 #[unsafe(no_mangle)]

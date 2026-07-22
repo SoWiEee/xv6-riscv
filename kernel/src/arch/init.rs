@@ -2,10 +2,11 @@
 use super::asm::*;
 use super::interrupt::*;
 use crate::mm::frame_allocator::kinit;
-use crate::proc::procinit;
+use crate::proc::scheduler::procinit;
 use crate::arch::console::consoleinit;
 use crate::mm::page_table::{kvminit, kvminithart};
 use crate::mm::address::PhysAddr;
+use crate::proc::scheduler::scheduler;
 
 static mut STARTED: bool = false;
 
@@ -21,12 +22,17 @@ pub extern "C" fn init() -> ! {
         }
         let start = end as usize;
         let end_addr = crate::arch::asm::PHYSTOP;
+        
+        // Initialize frame allocator first so kvminit can allocate pages
         kinit(
             PhysAddr::new(start),
             PhysAddr::new(end_addr),
         );
+        
+        // Initialize kernel page table
         kvminit();
         kvminithart();
+        
         procinit();
         trapinit();
         plic_init();
@@ -49,7 +55,7 @@ pub extern "C" fn init() -> ! {
         plic_init_hart();
     }
     
-    crate::proc::scheduler();
+    scheduler();
 }
 
 fn started() -> bool {

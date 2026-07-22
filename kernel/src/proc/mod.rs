@@ -1,129 +1,120 @@
 // kernel/src/proc/mod.rs
-use crate::arch::trap::TrapFrame;
+pub mod process;
+pub mod scheduler;
+pub mod syscall;
+pub mod trapframe;
+
+use crate::proc::process::{Proc, ProcState, NPROC, NOFILE, ProcInner};
 use crate::arch::trap::Context;
 use crate::arch::asm::r_tp;
+use crate::sync::spinlock::{SpinLock, SpinLockGuard};
+use crate::mm::page_table::PageTable;
 use crate::mm::address::PhysPageNum;
-use crate::sync::spinlock::{SpinLock, release_raw};
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::sync::atomic::AtomicUsize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProcState {
-    Unused,
-    Used,
-    Sleeping,
-    Runnable,
-    Running,
-    Zombie,
-}
-
-pub struct Process {
-    pub pid: usize,
-    pub trapframe: TrapFrame,
-    pub context: Context,
-    pub pagetable: PhysPageNum,
-    pub killed: bool,
-    pub sz: usize,
-    pub state: ProcState,
-    pub chan: usize,  // Channel for sleep/wakeup
-}
-
 pub struct Cpu {
-    pub noff: usize,      // Depth of push_off() nesting
-    pub intena: bool,     // Were interrupts enabled before push_off()?
+    pub proc: Option<&'static Proc>,
+    pub context: Context,
+    pub noff: usize,
+    pub intena: bool,
 }
 
-static mut CPUS: [Cpu; 8] = [const { Cpu { noff: 0, intena: false } }; 8];
+impl Cpu {
+    const fn new() -> Self { 
+        Self { 
+            proc: None, 
+            context: Context::new(), 
+            noff: 0, 
+            intena: false 
+        } 
+    }
+}
+
+static mut CPU: [Cpu; 8] = [const { Cpu::new() }; 8];
 
 pub fn mycpu() -> &'static mut Cpu {
-    let hartid = r_tp();
-    unsafe { &mut CPUS[hartid] }
+    let hart = r_tp();
+    unsafe { &mut CPU[hart] }
 }
 
-static mut PROCESSES: [Option<Process>; 64] = [const { None }; 64];
-static mut CURRENT_PROC: *mut Process = core::ptr::null_mut();
-static mut NPROC: usize = 0;
-static mut TICKS: usize = 0;
-
-static NEXT_PID: AtomicUsize = AtomicUsize::new(1);
-
-// Wait queues for sleep/wakeup - using usize (process pointer as usize) to avoid Send issues
-static WAIT_QUEUES: SpinLock<BTreeMap<usize, Vec<usize>>> = 
-    SpinLock::new(BTreeMap::new(), "wait_queues");
-
-pub fn procinit() {
-    unsafe {
-        NPROC = 0;
-        CURRENT_PROC = core::ptr::null_mut();
-    }
+pub fn current_process() -> &'static Proc {
+    mycpu().proc.expect("no current process")
 }
 
-pub fn current_process() -> &'static mut Process {
-    unsafe {
-        if CURRENT_PROC.is_null() {
-            panic!("current_process: no current process");
-        }
-        &mut *CURRENT_PROC
-    }
+pub fn current_process_opt() -> Option<&'static Proc> {
+    mycpu().proc
 }
 
-pub fn current_process_opt() -> Option<&'static mut Process> {
-    unsafe {
-        if CURRENT_PROC.is_null() {
-            None
-        } else {
-            Some(&mut *CURRENT_PROC)
-        }
-    }
-}
-
-pub fn is_killed(p: &Process) -> bool {
-    p.killed
-}
-
-pub fn set_killed(p: &mut Process) {
-    p.killed = true;
-}
-
-pub fn kexit(code: i32) -> ! {
-    panic!("kexit: {}", code);
-}
-
-pub fn yield_now() {
-    // TODO: implement context switch
-    loop {
-        crate::arch::asm::wfi();
-    }
+pub fn started() -> bool {
+    unsafe { crate::proc::scheduler::SCHEDULER_STARTED }
 }
 
 pub fn tick() {
+    // Increment ticks, wakeup sleepers
+    static mut TICKS: usize = 0;
     unsafe {
         TICKS += 1;
+        if TICKS % 100 == 0 {
+            // Wake up sleepers every 100 ticks
+            crate::proc::wakeup(TICKS);
+        }
     }
 }
 
-pub fn sched() {
-    // TODO: implement scheduler
-    loop {
-        crate::arch::asm::wfi();
-    }
-}
-
-pub fn scheduler() -> ! {
-    loop {
-        crate::arch::asm::wfi();
-    }
+pub fn ticks() -> usize {
+    static mut TICKS: usize = 0;
+    unsafe { TICKS }
 }
 
 pub fn userinit() {
     // Create first user process
-    crate::arch::console::printk(format_args!("userinit: creating first user process\n"));
+    let p = crate::proc::scheduler::alloc_proc().expect("userinit: alloc_proc failed");
+    let mut inner = p.lock();
+    
+    // Create user page table
+    let mut pt = PageTable::new().expect("userinit: failed to create page table");
+    
+    // Map trampoline
+    pt.map(
+        crate::mm::address::VirtAddr(crate::arch::asm::TRAMPOLINE),
+        crate::mm::address::PhysAddr(crate::arch::asm::TRAMPOLINE),
+        crate::arch::paging::PTE_R | crate::arch::paging::PTE_X
+    ).unwrap();
+    
+    inner.pagetable = Some(pt);
+    inner.sz = 0;
+    
+    // Set up trapframe
+    let tf = unsafe { &mut *inner.trapframe };
+    tf.kernel_satp = crate::mm::page_table::kernel_pagetable();
+    tf.kernel_sp = inner.kstack + 4096;
+    tf.kernel_trap = crate::arch::trap::usertrap as usize;
+    tf.epc = 0; // User entry point
+    tf.sp = 0;  // User stack pointer
+    
+    // Set up context for first return to user
+    inner.context.ra = crate::arch::trap::userret as usize;
+    inner.context.sp = inner.kstack + 4096;
+    
+    inner.pid = 1;
+    inner.state = ProcState::Runnable;
+    inner.name = *b"init\0\0\0\0\0\0\0\0\0\0\0\0";
+    
+    // Set cwd
+    crate::fs::iinit();
+    inner.cwd = crate::fs::namei("/").ok();
+    
+    drop(inner);
+    
+    // Make runnable
+    p.set_runnable();
 }
 
-pub fn started() -> bool {
-    unsafe { NPROC > 0 }
-}
+// Wait queues for sleep/wakeup - using usize (process pointer as usize) to avoid Send issues
+static WAIT_QUEUES: SpinLock<BTreeMap<usize, Vec<usize>>> = 
+    SpinLock::new(BTreeMap::new(), "wait_queues");
 
 /// Sleep on a channel, releasing the given lock.
 /// The lock must be held before calling sleep.
@@ -133,13 +124,13 @@ pub fn started() -> bool {
 pub fn sleep(chan: usize, lock: &SpinLock<impl Sized>) {
     let p = current_process();
     let mut queues = WAIT_QUEUES.acquire();
-    queues.entry(chan).or_default().push(p as *const Process as usize);
-    p.state = ProcState::Sleeping;
-    p.chan = chan;
+    queues.entry(chan).or_default().push(p as *const Proc as usize);
+    p.set_state(ProcState::Sleeping);
+    p.set_chan(chan);
     // Release the lock by manually unlocking
     // SAFETY: The caller guarantees the lock is held but no guard exists
     unsafe {
-        release_raw(&lock.locked);
+        crate::sync::spinlock::release_raw(&lock.locked);
     }
     sched();
     // Re-acquire the lock
@@ -147,7 +138,7 @@ pub fn sleep(chan: usize, lock: &SpinLock<impl Sized>) {
     // Remove from wait queue after wakeup
     let mut queues = WAIT_QUEUES.acquire();
     if let Some(vec) = queues.get_mut(&chan) {
-        vec.retain(|&ptr| ptr != p as *const Process as usize);
+        vec.retain(|&ptr| ptr != p as *const Proc as usize);
     }
 }
 
@@ -157,8 +148,30 @@ pub fn wakeup(chan: usize) {
     if let Some(vec) = queues.get_mut(&chan) {
         let ptrs: Vec<usize> = vec.drain(..).collect();
         for p_ptr in ptrs {
-            let p = unsafe { &mut *(p_ptr as *mut Process) };
-            p.state = ProcState::Runnable;
+            let p = unsafe { &*(p_ptr as *const Proc) };
+            if p.state() == ProcState::Sleeping {
+                p.set_state(ProcState::Runnable);
+            }
         }
     }
+}
+
+pub fn sched() {
+    crate::proc::scheduler::sched();
+}
+
+pub fn yield_now() {
+    crate::proc::scheduler::yield_now();
+}
+
+pub fn is_killed(p: &Proc) -> bool {
+    p.is_killed()
+}
+
+pub fn set_killed(p: &Proc) {
+    p.kill();
+}
+
+pub fn kexit(code: i32) -> ! {
+    crate::proc::syscall::sys_exit(code)
 }

@@ -45,6 +45,7 @@ impl PageTable {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct PageTableWalker {
     root: PhysPageNum,
 }
