@@ -104,7 +104,9 @@ pub fn userinit() {
     
     // Set cwd
     crate::fs::iinit();
-    inner.cwd = crate::fs::namei("/").ok();
+    if let Ok(inode) = crate::fs::namei("/") {
+        inner.cwd = Some(inode);
+    }
     
     drop(inner);
     

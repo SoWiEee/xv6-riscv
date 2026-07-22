@@ -42,7 +42,7 @@ pub struct ProcInner {
     pub trapframe: *mut TrapFrame,
     pub context: Context,
     pub ofile: [Option<File>; NOFILE],
-    pub cwd: Option<Inode>,
+    pub cwd: Option<&'static Inode>,
     pub name: [u8; 16],
 }
 
