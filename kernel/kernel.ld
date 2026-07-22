@@ -41,5 +41,11 @@ SECTIONS
     *(.bss .bss.*)
   }
 
+  /* Stack - 16KB */
+  . = ALIGN(16);
+  PROVIDE(stack_bottom = .);
+  . = . + 0x4000;
+  PROVIDE(stack_top = .);
+
   PROVIDE(end = .);
 }

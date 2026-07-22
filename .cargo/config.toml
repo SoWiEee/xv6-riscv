@@ -1,0 +1,16 @@
+[build]
+target = "riscv64imac-unknown-none-elf"
+
+[target.riscv64imac-unknown-none-elf]
+linker = "rust-lld"
+rustflags = [
+    "-C", "link-arg=-zmax-page-size=4096",
+    "-C", "link-arg=--no-gc-sections",
+    "-C", "link-arg=-T/home/acane/Desktop/xv6-riscv/kernel/memory.x",
+    "-C", "default-linker-libraries",
+    "-C", "link-dead-code=yes",
+]
+
+[unstable]
+build-std = ["core", "compiler_builtins", "alloc"]
+build-std-features = ["compiler-builtins-mem"]

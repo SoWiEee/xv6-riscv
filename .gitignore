@@ -10,3 +10,6 @@ _*
 /user/usys.S
 .gdbinit
 TAGS
+.opencode/
+opencode.json
+target/

@@ -1,0 +1,33 @@
+[package]
+name = "xv6-kernel"
+version = "0.1.0"
+edition = "2024"
+
+[build-dependencies]
+cc = "1.0"
+
+[dependencies]
+riscv = { workspace = true }
+tock-registers = { workspace = true }
+bitflags = { workspace = true }
+spin = { workspace = true }
+linked_list_allocator = { workspace = true }
+buddy_system_allocator = { workspace = true }
+critical-section = { workspace = true }
+
+[[bin]]
+name = "xv6-kernel"
+path = "src/bin/kernel.rs"
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
+strip = true
+opt-level = "z"
+
+[profile.dev]
+panic = "abort"
+
+[target.riscv64imac-unknown-none-elf]
+runner = "qemu-system-riscv64 -machine virt -nographic -bios none -kernel"

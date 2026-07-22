@@ -1,0 +1,15 @@
+[package]
+name = "xv6-user"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+xv6-user-lib = { path = "../user-lib" }
+
+[[bin]]
+name = "sh"
+path = "src/bin/sh.rs"
+
+[[bin]]
+name = "ls"
+path = "src/bin/ls.rs"

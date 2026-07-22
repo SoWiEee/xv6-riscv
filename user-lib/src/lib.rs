@@ -1,0 +1,144 @@
+// user-lib/src/lib.rs
+#![no_std]
+extern crate alloc;
+
+pub mod syscall;
+pub mod stdio;
+pub mod string;
+pub mod fs;
+pub mod process;
+
+// Syscall numbers matching xv6
+pub const SYS_FORK: usize = 1;
+pub const SYS_EXIT: usize = 2;
+pub const SYS_WAIT: usize = 3;
+pub const SYS_PIPE: usize = 4;
+pub const SYS_READ: usize = 5;
+pub const SYS_WRITE: usize = 6;
+pub const SYS_CLOSE: usize = 7;
+pub const SYS_KILL: usize = 8;
+pub const SYS_EXEC: usize = 9;
+pub const SYS_FSTAT: usize = 10;
+pub const SYS_CHDIR: usize = 11;
+pub const SYS_DUP: usize = 12;
+pub const SYS_GETPID: usize = 13;
+pub const SYS_SBRK: usize = 14;
+pub const SYS_SLEEP: usize = 15;
+pub const SYS_UPTIME: usize = 16;
+pub const SYS_OPEN: usize = 17;
+pub const SYS_WRITE: usize = 18;
+pub const SYS_MKNOD: usize = 19;
+pub const SYS_UNLINK: usize = 20;
+pub const SYS_LINK: usize = 21;
+pub const SYS_MKDIR: usize = 22;
+pub const SYS_CLOSE: usize = 23;
+
+// Syscall macro
+#[macro_export]
+macro_rules! syscall {
+    ($num:expr) => {{
+        let ret: usize;
+        unsafe {
+            core::arch::asm!(
+                "ecall",
+                in("a7") $num,
+                lateout("a0") ret,
+                options(nostack)
+            );
+        }
+        ret
+    }};
+    ($num:expr, $a0:expr) => {{
+        let ret: usize;
+        unsafe {
+            core::arch::asm!(
+                "ecall",
+                in("a7") $num,
+                in("a0") $a0,
+                lateout("a0") ret,
+                options(nostack)
+            );
+        }
+        ret
+    }};
+    ($num:expr, $a0:expr, $a1:expr) => {{
+        let ret: usize;
+        unsafe {
+            core::arch::asm!(
+                "ecall",
+                in("a7") $num,
+                in("a0") $a0,
+                in("a1") $a1,
+                lateout("a0") ret,
+                options(nostack)
+            );
+        }
+        ret
+    }};
+    ($num:expr, $a0:expr, $a1:expr, $a2:expr) => {{
+        let ret: usize;
+        unsafe {
+            core::arch::asm!(
+                "ecall",
+                in("a7") $num,
+                in("a0") $a0,
+                in("a1") $a1,
+                in("a2") $a2,
+                lateout("a0") ret,
+                options(nostack)
+            );
+        }
+        ret
+    }};
+    ($num:expr, $a0:expr, $a1:expr, $a2:expr, $a3:expr) => {{
+        let ret: usize;
+        unsafe {
+            core::arch::asm!(
+                "ecall",
+                in("a7") $num,
+                in("a0") $a0,
+                in("a1") $a1,
+                in("a2") $a2,
+                in("a3") $a3,
+                lateout("a0") ret,
+                options(nostack)
+            );
+        }
+        ret
+    }};
+    ($num:expr, $a0:expr, $a1:expr, $a2:expr, $a3:expr, $a4:expr) => {{
+        let ret: usize;
+        unsafe {
+            core::arch::asm!(
+                "ecall",
+                in("a7") $num,
+                in("a0") $a0,
+                in("a1") $a1,
+                in("a2") $a2,
+                in("a3") $a3,
+                in("a4") $a4,
+                lateout("a0") ret,
+                options(nostack)
+            );
+        }
+        ret
+    }};
+    ($num:expr, $a0:expr, $a1:expr, $a2:expr, $a3:expr, $a4:expr, $a5:expr) => {{
+        let ret: usize;
+        unsafe {
+            core::arch::asm!(
+                "ecall",
+                in("a7") $num,
+                in("a0") $a0,
+                in("a1") $a1,
+                in("a2") $a2,
+                in("a3") $a3,
+                in("a4") $a4,
+                in("a5") $a5,
+                lateout("a0") ret,
+                options(nostack)
+            );
+        }
+        ret
+    }};
+}

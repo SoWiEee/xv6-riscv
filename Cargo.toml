@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["kernel", "user"]
+
+[workspace.dependencies]
+riscv = { version = "0.16", features = ["s-mode"] }
+tock-registers = "0.8"
+bitflags = "2"
+spin = "0.9"
+linked_list_allocator = "0.10"
+buddy_system_allocator = "0.13"
+critical-section = { version = "1.2", features = ["restore-state-bool"] }
+x86_64 = "0.17"

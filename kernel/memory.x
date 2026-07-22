@@ -1,0 +1,36 @@
+/* kernel/memory.x */
+MEMORY
+{
+    KERNEL : ORIGIN = 0x80000000, LENGTH = 128M
+}
+
+ENTRY(_start)
+
+SECTIONS
+{
+    .text : {
+        *(.text.entry)
+        *(.text)
+        *(.text.*)
+        *(.rodata)
+        *(.rodata.*)
+        *(.data)
+        *(.data.*)
+        *(.bss)
+        *(.bss.*)
+        *(.sbss)
+        *(.sbss.*)
+        *(COMMON)
+        *(.eh_frame)
+        *(.eh_frame.*)
+    } > KERNEL
+    
+    .stack (NOLOAD) : {
+        . = ALIGN(16);
+        _stack_start = .;
+        . += 4096;
+        _stack_end = .;
+    } > KERNEL
+    
+    _kernel_end = .;
+}
