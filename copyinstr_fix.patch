@@ -1,0 +1,29 @@
+# Patch for copyinstr() kernel stack info leak vulnerability
+# 
+# The bug: copyinstr() copies up to 'max' bytes from user string to kernel buffer
+# but does NOT null-terminate the buffer when no null terminator is found within
+# 'max' bytes. If a caller uses the buffer without checking the return value,
+# strlen() or similar functions will read past the buffer into kernel stack memory.
+#
+# This patch adds defensive null-termination on failure path.
+#
+# File: kernel/vm.c
+# Function: copyinstr()
+
+--- a/kernel/vm.c
++++ b/kernel/vm.c
+@@ -440,7 +440,12 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
+     srcva = va0 + PGSIZE;
+   }
+   if (got_null) {
+     return 0;
+-  } else {
++  } else {
++    // DEFENSIVE: Ensure buffer is null-terminated even on failure
++    // Prevents kernel stack info leak if caller forgets to check return value
++    if (max > 0) {
++      *dst = '\0';
++    }
+     return -1;
+   }
+ }
