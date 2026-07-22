@@ -32,7 +32,7 @@ impl<T> SleepLock<T> {
             let guard = self.guard_lock.acquire();
             if !unsafe { *self.locked.get() } {
                 unsafe { *self.locked.get() = true; }
-                unsafe { *self.pid.get() = p.pid; }
+                unsafe { *self.pid.get() = p.pid(); }
                 drop(guard);
                 return SleepLockGuard { lock: self };
             }

@@ -1,0 +1,2 @@
+/kernel/*.c linguist-vendored
+/kernel/*.h linguist-vendored

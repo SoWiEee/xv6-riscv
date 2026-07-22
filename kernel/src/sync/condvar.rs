@@ -1,6 +1,7 @@
 // kernel/src/sync/condvar.rs
 use crate::sync::spinlock::{SpinLock, release_raw};
-use crate::proc::{Process, ProcState, current_process};
+use crate::proc::process::{Proc, ProcState};
+use crate::proc::current_process;
 use alloc::collections::VecDeque;
 
 pub struct Condvar {
@@ -15,7 +16,7 @@ impl Condvar {
     pub fn sleep(&self, lock: &SpinLock<impl Sized>) {
         let p = current_process();
         let mut q = self.wait_queue.acquire();
-        q.push_back(p as *const Process as usize);
+        q.push_back(p as *const Proc as usize);
         // Release the external lock while sleeping
         unsafe {
             release_raw(&lock.locked);
@@ -29,16 +30,16 @@ impl Condvar {
     pub fn wakeup(&self) {
         let mut q = self.wait_queue.acquire();
         while let Some(p_ptr) = q.pop_front() {
-            let p = unsafe { &mut *(p_ptr as *mut Process) };
-            p.state = ProcState::Runnable;
+            let p = unsafe { &mut *(p_ptr as *mut Proc) };
+            p.set_state(ProcState::Runnable);
         }
     }
     
     pub fn wakeup_one(&self) {
         let mut q = self.wait_queue.acquire();
         if let Some(p_ptr) = q.pop_front() {
-            let p = unsafe { &mut *(p_ptr as *mut Process) };
-            p.state = ProcState::Runnable;
+            let p = unsafe { &mut *(p_ptr as *mut Proc) };
+            p.set_state(ProcState::Runnable);
         }
     }
 }

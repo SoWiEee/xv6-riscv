@@ -35,6 +35,10 @@ impl Buf {
     pub fn lock(&self) -> BufGuard<'_> { 
         BufGuard { guard: self.lock.acquire() }
     }
+    
+    pub fn lock_with_data(&self) -> BufGuard<'_> {
+        BufGuard { guard: self.lock.acquire() }
+    }
 }
 
 pub struct BufGuard<'a> {
@@ -64,9 +68,14 @@ impl BufRef {
     pub fn index(&self) -> usize { self.index }
     
     pub fn lock(&self) -> BufGuard<'_> {
+        // SAFETY: BUF_CACHE is a static, so the buffer lives for the entire program.
+        // We briefly acquire the cache lock to get a pointer to the buffer,
+        // then release the cache lock. The returned BufGuard borrows from the Buf
+        // which is stored in the static BUF_CACHE and thus has 'static lifetime.
         let cache = BUF_CACHE.acquire();
-        let buf = cache.buffers[self.index].as_ref().unwrap();
-        buf.lock()
+        let buf_ptr: *const Buf = cache.buffers[self.index].as_ref().unwrap() as *const Buf;
+        drop(cache);
+        unsafe { &*buf_ptr }.lock_with_data()
     }
 }
 
@@ -177,17 +186,20 @@ fn bget(dev: u32, blockno: u32) -> BufRef {
         }
         
         // Not found - find a free buffer (refcnt == 0)
-        if let Some(lru_idx) = cache.get_lru() {
+        let lru_idx = cache.get_lru();
+        if let Some(lru_idx) = lru_idx {
             if let Some(buf) = &cache.buffers[lru_idx] {
                 let mut guard = buf.lock();
                 if guard.refcnt() == 0 {
-                    // Reuse this buffer
+                    // Reuse this buffer - need to drop guard first to avoid borrow conflict
+                    let idx = lru_idx;
                     guard.guard.blockno = blockno;
                     guard.guard.dev = dev;
                     guard.guard.valid = false;
                     guard.guard.refcnt = 1;
-                    cache.move_to_head(lru_idx);
-                    return BufRef::new(lru_idx);
+                    drop(guard);
+                    cache.move_to_head(idx);
+                    return BufRef::new(idx);
                 }
             }
         }
@@ -200,17 +212,25 @@ fn bget(dev: u32, blockno: u32) -> BufRef {
 
 pub fn bread(dev: u32, blockno: u32) -> BufRef {
     let buf_ref = bget(dev, blockno);
+    
+    // Check if valid while holding cache lock
+    let mut needs_read = false;
     {
         let mut cache = BUF_CACHE.acquire();
         let buf = cache.buffers[buf_ref.index()].as_ref().unwrap();
         let mut guard = buf.lock();
-        
         if !guard.valid() {
-            // Need to read from disk
-            drop(cache); // Release lock before I/O
-            read_block(dev, blockno, guard.data_mut());
-            guard.set_valid(true);
+            needs_read = true;
         }
+    }
+    
+    if needs_read {
+        // Need to read from disk - acquire lock again for I/O
+        let mut cache = BUF_CACHE.acquire();
+        let buf = cache.buffers[buf_ref.index()].as_ref().unwrap();
+        let mut guard = buf.lock();
+        read_block(dev, blockno, guard.data_mut());
+        guard.set_valid(true);
     }
     buf_ref
 }

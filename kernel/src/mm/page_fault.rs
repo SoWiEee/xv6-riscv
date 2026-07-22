@@ -8,7 +8,9 @@ pub fn handle_page_fault(pagetable: &mut PageTable, vaddr: usize, read: bool) ->
     let p = current_process();
     let vaddr = VirtAddr::new(vaddr);
     
-    if vaddr.0 >= p.sz {
+    let sz = p.sz();
+    
+    if vaddr.0 >= sz {
         return Err("invalid address");
     }
     

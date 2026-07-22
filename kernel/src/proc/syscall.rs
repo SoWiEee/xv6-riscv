@@ -219,13 +219,13 @@ fn sys_pipe(fd0: usize, fd1: usize) -> isize {
 
 fn sys_read(fd: usize, addr: usize, n: usize) -> isize {
     let p = current_process();
-    let inner = p.lock();
+    let mut inner = p.lock();
     
     if fd >= 16 || inner.ofile[fd].is_none() {
         return -1;
     }
     
-    let f = inner.ofile[fd].as_ref().unwrap().clone();
+    let f = filedup(inner.ofile[fd].as_ref().unwrap());
     let pagetable = inner.pagetable.clone();
     drop(inner);
     
@@ -234,7 +234,7 @@ fn sys_read(fd: usize, addr: usize, n: usize) -> isize {
     let va = crate::mm::address::VirtAddr(addr);
     if let Some(pa) = pt.translate(va) {
         let dst = unsafe { core::slice::from_raw_parts_mut(pa.0 as *mut u8, n) };
-        let nread = fileread(f, dst);
+        let nread = fileread(&f, dst);
         return nread as isize;
     }
     -1
@@ -242,13 +242,13 @@ fn sys_read(fd: usize, addr: usize, n: usize) -> isize {
 
 fn sys_write(fd: usize, addr: usize, n: usize) -> isize {
     let p = current_process();
-    let inner = p.lock();
+    let mut inner = p.lock();
     
     if fd >= 16 || inner.ofile[fd].is_none() {
         return -1;
     }
     
-    let f = inner.ofile[fd].as_ref().unwrap().clone();
+    let f = filedup(inner.ofile[fd].as_ref().unwrap());
     let pagetable = inner.pagetable.clone();
     drop(inner);
     
@@ -257,7 +257,7 @@ fn sys_write(fd: usize, addr: usize, n: usize) -> isize {
     let va = crate::mm::address::VirtAddr(addr);
     if let Some(pa) = pt.translate(va) {
         let src = unsafe { core::slice::from_raw_parts(pa.0 as *const u8, n) };
-        let nwritten = filewrite(f, src);
+        let nwritten = filewrite(&f, src);
         return nwritten as isize;
     }
     -1

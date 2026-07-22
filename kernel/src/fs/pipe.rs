@@ -98,12 +98,12 @@ impl Pipe {
         }
         
         // Ensure capacity
-        if inner.data.len() < inner.nwrite + n {
-            inner.data.resize(inner.nwrite + n, 0);
+        let needed = inner.nwrite + n;
+        if inner.data.len() < needed {
+            inner.data.resize(needed, 0);
         }
         
         let dst_start = inner.nwrite;
-        let dst_end = inner.nwrite + n;
         // Copy data - need to avoid overlapping borrows
         let src_slice = &src[..n];
         for (i, &byte) in src_slice.iter().enumerate() {
@@ -135,14 +135,20 @@ impl Pipe {
 
 impl Clone for Pipe {
     fn clone(&self) -> Self {
-        let inner = self.inner();
+        let inner_guard = self.inner();
+        let data = inner_guard.data.clone();
+        let nread = inner_guard.nread;
+        let nwrite = inner_guard.nwrite;
+        let read_open = inner_guard.read_open;
+        let write_open = inner_guard.write_open;
+        drop(inner_guard);
         Self {
             lock: SpinLock::new(PipeInner {
-                data: inner.data.clone(),
-                nread: inner.nread,
-                nwrite: inner.nwrite,
-                read_open: inner.read_open,
-                write_open: inner.write_open,
+                data,
+                nread,
+                nwrite,
+                read_open,
+                write_open,
             }, "pipe"),
         }
     }

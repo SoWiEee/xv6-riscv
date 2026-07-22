@@ -620,7 +620,7 @@ fn balloc(dev: u32) -> u32 {
     for b in 0..sb.nblocks {
         let bp = bread(dev, BBLOCK(b, &sb));
         {
-            let buf = bp.lock();
+            let mut buf = bp.lock();
             let data = buf.data();
             let byte = data[(b % BPB) as usize / 8];
             let bit = (b % BPB) % 8;
