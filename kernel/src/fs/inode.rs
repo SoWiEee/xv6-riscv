@@ -62,13 +62,13 @@ pub struct Inode {
     refcnt: usize,
 }
 
-struct InodeInner {
-    typ: InodeType,
-    major: u16,
-    minor: u16,
-    nlink: u16,
-    size: u32,
-    addrs: [u32; NDIRECT + 1],
+pub struct InodeInner {
+    pub typ: InodeType,
+    pub major: u16,
+    pub minor: u16,
+    pub nlink: u16,
+    pub size: u32,
+    pub addrs: [u32; NDIRECT + 1],
 }
 
 impl Inode {
@@ -101,7 +101,7 @@ impl Inode {
     pub fn inum(&self) -> u32 { self.inum }
     pub fn refcnt(&self) -> usize { self.refcnt }
     
-    fn inner(&self) -> SpinLockGuard<InodeInner> {
+    pub fn inner(&self) -> SpinLockGuard<InodeInner> {
         self.spinlock.acquire()
     }
     
@@ -561,7 +561,7 @@ pub fn dirlookup(dp: &Inode, name: &str) -> Result<&'static Inode, &'static str>
     result.ok_or("not found")
 }
 
-fn dirlookup_locked(dp: &Inode, name: &str) -> Option<&'static Inode> {
+pub fn dirlookup_locked(dp: &Inode, name: &str) -> Option<&'static Inode> {
     if dp.typ() != InodeType::Dir {
         return None;
     }
@@ -655,25 +655,25 @@ fn bfree(dev: u32, bno: u32) {
 }
 
 // Directory entry
-const DIRSIZ: usize = 14;
+pub const DIRSIZ: usize = 14;
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-struct Dirent {
-    inum: u16,
-    name: [u8; DIRSIZ],
+pub struct Dirent {
+    pub inum: u16,
+    pub name: [u8; DIRSIZ],
 }
 
 impl Dirent {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self { inum: 0, name: [0; DIRSIZ] }
     }
     
-    fn as_bytes(&self) -> &[u8] {
+    pub fn as_bytes(&self) -> &[u8] {
         unsafe { core::slice::from_raw_parts(self as *const Self as *const u8, core::mem::size_of::<Self>()) }
     }
     
-    fn as_bytes_mut(&mut self) -> &mut [u8] {
+    pub fn as_bytes_mut(&mut self) -> &mut [u8] {
         unsafe { core::slice::from_raw_parts_mut(self as *mut Self as *mut u8, core::mem::size_of::<Self>()) }
     }
 }

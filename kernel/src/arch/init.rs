@@ -7,13 +7,23 @@ use crate::arch::console::consoleinit;
 use crate::mm::page_table::{kvminit, kvminithart};
 use crate::mm::address::PhysAddr;
 use crate::proc::scheduler::scheduler;
+use core::sync::atomic::{AtomicBool, Ordering};
 
-static mut STARTED: bool = false;
+static STARTED: AtomicBool = AtomicBool::new(false);
 
 #[unsafe(no_mangle)]
 pub extern "C" fn init() -> ! {
     let hart_id = r_tp();
+    
+    // All harts wait here until hart 0 signals
+    if hart_id != 0 {
+        while !started() {
+            core::hint::spin_loop();
+        }
+    }
+    
     if hart_id == 0 {
+        // Hart 0 does full initialization
         consoleinit();
         crate::arch::console::printk(format_args!("\nxv6-rust kernel is booting\n\n"));
         // Get physical memory range from linker script
@@ -43,13 +53,11 @@ pub extern "C" fn init() -> ! {
         crate::proc::userinit();
         
         // Signal other harts
-        unsafe { STARTED = true; }
-        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-    } else {
-        // Wait for hart 0
-        while !started() {
-            core::hint::spin_loop();
-        }
+        STARTED.store(true, Ordering::SeqCst);
+    }
+    
+    // All non-zero harts initialize their page tables and traps
+    if hart_id != 0 {
         kvminithart();
         trapinit();
         plic_init_hart();
@@ -59,7 +67,7 @@ pub extern "C" fn init() -> ! {
 }
 
 fn started() -> bool {
-    unsafe { core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst); STARTED }
+    STARTED.load(Ordering::SeqCst)
 }
 
 pub fn trapinit() {

@@ -16,15 +16,15 @@ pub struct File {
     lock: SpinLock<FileInner>,
 }
 
-struct FileInner {
-    typ: FileType,
-    refcnt: usize,
-    readable: bool,
-    writable: bool,
-    pipe: Option<Pipe>,
-    inode: Option<&'static Inode>,
-    off: usize,
-    major: u16,
+pub struct FileInner {
+    pub typ: FileType,
+    pub refcnt: usize,
+    pub readable: bool,
+    pub writable: bool,
+    pub pipe: Option<Pipe>,
+    pub inode: Option<&'static Inode>,
+    pub off: usize,
+    pub major: u16,
 }
 
 impl File {
@@ -73,7 +73,7 @@ impl File {
         }
     }
     
-    fn inner(&self) -> SpinLockGuard<FileInner> {
+    pub fn inner(&self) -> SpinLockGuard<FileInner> {
         self.lock.acquire()
     }
     
@@ -304,13 +304,46 @@ pub fn filewrite(f: &File, src: &[u8]) -> usize {
     }
 }
 
-pub fn filestat(f: &File, _addr: usize) -> isize {
+pub fn filestat(f: &File, addr: usize) -> isize {
     let inner = f.inner();
     match inner.typ {
         FileType::Inode => {
-            if inner.inode.is_some() {
-                // Fill in stat structure at addr
-                // For now, just return success
+            if let Some(inode) = inner.inode {
+                inode.lock();
+                let typ = inode.typ();
+                let mode = match typ {
+                    crate::fs::InodeType::Dir => 0x4000, // S_IFDIR
+                    crate::fs::InodeType::File => 0x8000, // S_IFREG
+                    crate::fs::InodeType::Device => 0x2000, // S_IFCHR
+                    _ => 0,
+                } | 0o644; // permissions
+                
+                let stat_ptr = addr as *mut u8;
+                unsafe {
+                    // dev
+                    *(stat_ptr.add(0) as *mut usize) = inode.dev() as usize;
+                    // ino
+                    *(stat_ptr.add(8) as *mut usize) = inode.inum() as usize;
+                    // mode
+                    *(stat_ptr.add(16) as *mut usize) = mode as usize;
+                    // nlink
+                    *(stat_ptr.add(24) as *mut usize) = inode.nlink() as usize;
+                    // uid
+                    *(stat_ptr.add(32) as *mut usize) = 0;
+                    // gid
+                    *(stat_ptr.add(40) as *mut usize) = 0;
+                    // rdev
+                    let major = inode.inner().major as usize;
+                    let minor = inode.inner().minor as usize;
+                    *(stat_ptr.add(48) as *mut usize) = (major << 8) | minor;
+                    // size
+                    *(stat_ptr.add(56) as *mut usize) = inode.size() as usize;
+                    // atime, mtime, ctime
+                    *(stat_ptr.add(64) as *mut usize) = 0;
+                    *(stat_ptr.add(72) as *mut usize) = 0;
+                    *(stat_ptr.add(80) as *mut usize) = 0;
+                }
+                inode.unlock();
                 0
             } else {
                 -1

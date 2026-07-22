@@ -8,9 +8,10 @@ pub mod pipe;
 pub use buf::{BSIZE, bread, brelse, bwrite, bpin, bunpin, binit, BufRef, BUF_CACHE, BufGuard};
 pub use inode::{
     Inode, InodeType, DiskInode, 
-    namei, nameiparent, dirlink, dirlookup, 
+    namei, nameiparent, dirlink, dirlookup, dirlookup_locked, 
     ialloc, iget, iput, iupdate, 
-    iinit, NDIRECT, NINDIRECT, MAXFILE
+    iinit, NDIRECT, NINDIRECT, MAXFILE,
+    Dirent
 };
 pub use log::{initlog, begin_op, end_op, SuperBlock, recover_from_log};
 pub use file::{File, FileType, filealloc, fileclose, filedup, fileread, filewrite, filestat, fileinit};

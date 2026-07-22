@@ -148,9 +148,9 @@ fn map_kernel(pt: &mut PageTable) {
     // Trampoline
     pt.map(VirtAddr(crate::arch::asm::TRAMPOLINE), PhysAddr(crate::arch::asm::TRAMPOLINE), PTE_R | PTE_X).unwrap();
     
-    // Kernel stacks for each CPU - map 16MB for stacks
+    // Kernel stacks for each CPU - map 1MB for stacks
     let stack_top = crate::arch::asm::PHYSTOP;
-    let stack_pages = 16 * 1024 * 1024 / PAGE_SIZE;
+    let stack_pages = 1 * 1024 * 1024 / PAGE_SIZE;
     for i in 0..stack_pages {
         let vaddr = VirtAddr(stack_top - (i + 1) * PAGE_SIZE);
         let paddr = PhysAddr(stack_top - (i + 1) * PAGE_SIZE);
