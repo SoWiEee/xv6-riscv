@@ -9,7 +9,7 @@ static HEAP: [u8; KERNEL_HEAP_SIZE] = [0; KERNEL_HEAP_SIZE];
 #[global_allocator]
 static ALLOCATOR: LockedHeap<32> = LockedHeap::<32>::empty();
 
-pub static FRAME_ALLOCATOR: SpinLock<FrameAllocator> = SpinLock::new(FrameAllocator::new());
+pub static FRAME_ALLOCATOR: SpinLock<FrameAllocator> = SpinLock::new(FrameAllocator::new(), "frame_allocator");
 
 pub struct FrameAllocator {
     start_ppn: PhysPageNum,
@@ -59,15 +59,15 @@ impl FrameAllocator {
 }
 
 pub fn kinit(start: PhysAddr, end: PhysAddr) {
-    FRAME_ALLOCATOR.lock().init(start, end);
+    FRAME_ALLOCATOR.acquire().init(start, end);
 }
 
 pub fn kalloc() -> Option<PhysPageNum> {
-    FRAME_ALLOCATOR.lock().alloc().ok()
+    FRAME_ALLOCATOR.acquire().alloc().ok()
 }
 
 pub fn kfree(ppn: PhysPageNum) {
-    FRAME_ALLOCATOR.lock().dealloc(ppn);
+    FRAME_ALLOCATOR.acquire().dealloc(ppn);
 }
 
 pub fn alloc_page() -> Result<PhysPageNum, &'static str> {
