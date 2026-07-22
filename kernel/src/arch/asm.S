@@ -1,20 +1,12 @@
-/* kernel/src/arch/asm.S - Assembly entry point and context switching */
+/* kernel/src/arch/asm.S */
 .section .text
-.global arch_init_init
-arch_init_init:
-    /* Save return address */
-    addi sp, sp, -16
-    sd ra, 8(sp)
-    /* Call Rust init function directly with jal */
-    call init
-    /* Restore and return */
-    ld ra, 8(sp)
-    addi sp, sp, 16
-    ret
+.global swtch
+.global uservec
+.global userret
+.global kernelvec
 
-.global context_switch
-context_switch:
-    /* a0 = old context (Context*), a1 = new context (Context*) */
+/* void swtch(struct context *old, struct context *new) */
+swtch:
     sd ra, 0(a0)
     sd sp, 8(a0)
     sd s0, 16(a0)
@@ -29,7 +21,6 @@ context_switch:
     sd s9, 88(a0)
     sd s10, 96(a0)
     sd s11, 104(a0)
-    
     ld ra, 0(a1)
     ld sp, 8(a1)
     ld s0, 16(a1)
@@ -46,85 +37,126 @@ context_switch:
     ld s11, 104(a1)
     ret
 
-.global uservec
+/* uservec: trampoline entry from user mode */
 uservec:
-    /* User trap entry - save user registers, switch to kernel stack */
-    csrrw sp, sscratch, sp
-    sd ra, 0(sp)
-    sd gp, 8(sp)
-    sd tp, 16(sp)
-    sd t0, 24(sp)
-    sd t1, 32(sp)
-    sd t2, 40(sp)
-    sd t3, 48(sp)
-    sd t4, 56(sp)
-    sd t5, 64(sp)
-    sd t6, 72(sp)
-    sd s0, 80(sp)
-    sd s1, 88(sp)
-    sd s2, 96(sp)
-    sd s3, 104(sp)
-    sd s4, 112(sp)
-    sd s5, 120(sp)
-    sd s6, 128(sp)
-    sd s7, 136(sp)
-    sd s8, 144(sp)
-    sd s9, 152(sp)
-    sd s10, 160(sp)
-    sd s11, 168(sp)
-    sd a0, 176(sp)
-    sd a1, 184(sp)
-    sd a2, 192(sp)
-    sd a3, 200(sp)
-    sd a4, 208(sp)
-    sd a5, 216(sp)
-    sd a6, 224(sp)
-    sd a7, 232(sp)
-    csrr t0, sstatus
-    sd t0, 240(sp)
-    csrr t0, sepc
-    sd t0, 248(sp)
-    csrr t0, sscratch
-    sd t0, 256(sp)
-    j trap_handler
+    /* swap user/kernel page tables */
+    csrrw t0, satp, a0
+    sfence.vma
+    
+    /* save user registers to trapframe (a0 = trapframe pointer) */
+    sd ra, 40(a0)
+    sd sp, 48(a0)
+    sd gp, 56(a0)
+    sd tp, 64(a0)
+    sd t0, 72(a0)
+    sd t1, 80(a0)
+    sd t2, 88(a0)
+    sd s0, 96(a0)
+    sd s1, 104(a0)
+    sd a0, 112(a0)
+    sd a1, 120(a0)
+    sd a2, 128(a0)
+    sd a3, 136(a0)
+    sd a4, 144(a0)
+    sd a5, 152(a0)
+    sd a6, 160(a0)
+    sd a7, 168(a0)
+    sd s2, 176(a0)
+    sd s3, 184(a0)
+    sd s4, 192(a0)
+    sd s5, 200(a0)
+    sd s6, 208(a0)
+    sd s7, 216(a0)
+    sd s8, 224(a0)
+    sd s9, 232(a0)
+    sd s10, 240(a0)
+    sd s11, 248(a0)
+    sd t3, 256(a0)
+    sd t4, 264(a0)
+    sd t5, 272(a0)
+    sd t6, 280(a0)
+    
+    /* load kernel registers from trapframe */
+    ld sp, 8(a0)      /* kernel_sp */
+    ld tp, 24(a0)     /* kernel_hartid */
+    ld t0, 16(a0)     /* kernel_trap */
+    
+    /* jump to usertrap */
+    jr t0
 
-.global userret
+/* userret: return to user mode */
 userret:
-    /* Return to user mode - restore user registers */
-    ld ra, 0(sp)
-    ld gp, 8(sp)
-    ld tp, 16(sp)
-    ld t0, 24(sp)
-    ld t1, 32(sp)
-    ld t2, 40(sp)
-    ld t3, 48(sp)
-    ld t4, 56(sp)
-    ld t5, 64(sp)
-    ld t6, 72(sp)
-    ld s0, 80(sp)
-    ld s1, 88(sp)
-    ld s2, 96(sp)
-    ld s3, 104(sp)
-    ld s4, 112(sp)
-    ld s5, 120(sp)
-    ld s6, 128(sp)
-    ld s7, 136(sp)
-    ld s8, 144(sp)
-    ld s9, 152(sp)
-    ld s10, 160(sp)
-    ld s11, 168(sp)
-    ld a0, 176(sp)
-    ld a1, 184(sp)
-    ld a2, 192(sp)
-    ld a3, 200(sp)
-    ld a4, 208(sp)
-    ld a5, 216(sp)
-    ld a6, 224(sp)
-    ld a7, 232(sp)
-    ld t0, 240(sp)
+    /* set up sstatus for user mode */
+    csrr t0, sstatus
+    li t1, ~0x100     /* clear SPP (bit 8) */
+    and t0, t0, t1
+    li t1, 0x20       /* set SPIE (bit 5) */
+    or t0, t0, t1
     csrw sstatus, t0
-    ld t0, 248(sp)
+    
+    /* set sepc from trapframe */
+    ld t0, 24(a0)     /* epc */
     csrw sepc, t0
-    ld t0, 256(sp)
-    csrw sscratch, t0
+    
+    /* restore user registers */
+    ld ra, 40(a0)
+    ld sp, 48(a0)
+    ld gp, 56(a0)
+    ld tp, 64(a0)
+    ld t0, 72(a0)
+    ld t1, 80(a0)
+    ld t2, 88(a0)
+    ld s0, 96(a0)
+    ld s1, 104(a0)
+    ld a0, 112(a0)
+    ld a1, 120(a0)
+    ld a2, 128(a0)
+    ld a3, 136(a0)
+    ld a4, 144(a0)
+    ld a5, 152(a0)
+    ld a6, 160(a0)
+    ld a7, 168(a0)
+    ld s2, 176(a0)
+    ld s3, 184(a0)
+    ld s4, 192(a0)
+    ld s5, 200(a0)
+    sd s6, 208(a0)
+    sd s7, 216(a0)
+    sd s8, 224(a0)
+    sd s9, 232(a0)
+    sd s10, 240(a0)
+    sd s11, 248(a0)
+    sd t3, 256(a0)
+    sd t4, 264(a0)
+    sd t5, 272(a0)
+    sd t6, 280(a0)
+    
+    /* switch to user page table */
+    ld t0, 0(a0)      /* kernel_satp */
+    csrrw t1, satp, t0
+    sfence.vma
+    
     sret
+
+/* kernelvec: trap entry from kernel mode */
+kernelvec:
+    /* save kernel registers, call kerneltrap, restore */
+    csrr t0, sstatus
+    csrr t1, sepc
+    csrr t2, scause
+    /* ... save registers to current process's trapframe ... */
+    call kerneltrap
+    /* ... restore ... */
+    sret
+
+.global arch_init_init
+arch_init_init:
+    /* Save return address */
+    addi sp, sp, -16
+    sd ra, 8(sp)
+    /* Call Rust init function directly with jal */
+    call init
+    /* Restore and return */
+    ld ra, 8(sp)
+    addi sp, sp, 16
+    ret

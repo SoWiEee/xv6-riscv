@@ -154,3 +154,15 @@ pub fn ecall() {
 pub fn ebreak() {
     unsafe { asm!("ebreak") };
 }
+
+pub const TRAMPOLINE: usize = usize::MAX - 4096 + 1; // 0xFFFFFFFFFFFFF000
+pub const KERNBASE: usize = 0x80000000;
+pub const PHYSTOP: usize = KERNBASE + 128 * 1024 * 1024;
+pub const UART0: usize = 0x10000000;
+pub const VIRTIO0: usize = 0x10001000;
+pub const PLIC: usize = 0x0C000000;
+pub const MAKE_SATP: fn(usize) -> usize = |ppn| (8 << 60) | (ppn << 12); // Sv39 mode
+
+pub const SSTATUS_SPP: usize = 1 << 8;
+pub const SSTATUS_SPIE: usize = 1 << 5;
+pub const SSTATUS_SIE: usize = 1 << 1;

@@ -1,17 +1,67 @@
 // kernel/src/arch/trap.rs
+use super::asm::*;
+use core::fmt::Write;
 
-#[repr(C)]
+#[repr(C, align(16))]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct TrapFrame {
+    pub kernel_satp: usize,
+    pub kernel_sp: usize,
+    pub kernel_trap: usize,
+    pub epc: usize,
+    pub kernel_hartid: usize,
     pub ra: usize,
+    pub sp: usize,
     pub gp: usize,
     pub tp: usize,
     pub t0: usize,
     pub t1: usize,
     pub t2: usize,
+    pub s0: usize,
+    pub s1: usize,
+    pub a0: usize,
+    pub a1: usize,
+    pub a2: usize,
+    pub a3: usize,
+    pub a4: usize,
+    pub a5: usize,
+    pub a6: usize,
+    pub a7: usize,
+    pub s2: usize,
+    pub s3: usize,
+    pub s4: usize,
+    pub s5: usize,
+    pub s6: usize,
+    pub s7: usize,
+    pub s8: usize,
+    pub s9: usize,
+    pub s10: usize,
+    pub s11: usize,
     pub t3: usize,
     pub t4: usize,
     pub t5: usize,
     pub t6: usize,
+}
+
+impl TrapFrame {
+    pub const fn new() -> Self {
+        Self {
+            kernel_satp: 0, kernel_sp: 0, kernel_trap: 0, epc: 0,
+            kernel_hartid: 0, ra: 0, sp: 0, gp: 0, tp: 0,
+            t0: 0, t1: 0, t2: 0, s0: 0, s1: 0,
+            a0: 0, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0, a6: 0, a7: 0,
+            s2: 0, s3: 0, s4: 0, s5: 0, s6: 0, s7: 0,
+            s8: 0, s9: 0, s10: 0, s11: 0,
+            t3: 0, t4: 0, t5: 0, t6: 0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Context {
+    pub ra: usize,
+    pub sp: usize,
     pub s0: usize,
     pub s1: usize,
     pub s2: usize,
@@ -24,31 +74,122 @@ pub struct TrapFrame {
     pub s9: usize,
     pub s10: usize,
     pub s11: usize,
-    pub a0: usize,
-    pub a1: usize,
-    pub a2: usize,
-    pub a3: usize,
-    pub a4: usize,
-    pub a5: usize,
-    pub a6: usize,
-    pub a7: usize,
-    pub sstatus: usize,
-    pub sepc: usize,
-    pub sscratch: usize,
 }
 
-impl TrapFrame {
-    pub fn new() -> Self {
-        Self {
-            ra: 0, gp: 0, tp: 0,
-            t0: 0, t1: 0, t2: 0, t3: 0,
-            t4: 0, t5: 0, t6: 0,
-            s0: 0, s1: 0, s2: 0, s3: 0,
-            s4: 0, s5: 0, s6: 0, s7: 0,
-            s8: 0, s9: 0, s10: 0, s11: 0,
-            a0: 0, a1: 0, a2: 0, a3: 0,
-            a4: 0, a5: 0, a6: 0, a7: 0,
-            sstatus: 0, sepc: 0, sscratch: 0,
+impl Context {
+    pub const fn new() -> Self {
+        Self { ra: 0, sp: 0, s0: 0, s1: 0, s2: 0, s3: 0,
+               s4: 0, s5: 0, s6: 0, s7: 0, s8: 0, s9: 0,
+               s10: 0, s11: 0 }
+    }
+}
+
+// Assembly functions - declare as public extern
+unsafe extern "C" {
+    fn uservec();
+    fn userret();
+    fn kernelvec();
+    fn swtch(old: *mut Context, new: *const Context);
+}
+
+/// Address of the kernelvec trap handler
+pub fn kernelvec_addr() -> usize {
+    kernelvec as usize
+}
+
+pub fn context_switch(old: &mut Context, new: &Context) {
+    unsafe { swtch(old as *mut Context, new as *const Context) }
+}
+
+pub fn prepare_return(tf: &mut TrapFrame) {
+    intr_off();
+    let trampoline_uservec = TRAMPOLINE + (uservec as usize - TRAMPOLINE);
+    w_stvec(trampoline_uservec);
+    tf.kernel_satp = r_satp();
+    tf.kernel_sp = tf.kernel_sp; // set by caller
+    tf.kernel_trap = usertrap as usize;
+    tf.kernel_hartid = r_tp();
+    let mut sstatus = r_sstatus();
+    sstatus &= !SSTATUS_SPP;
+    sstatus |= SSTATUS_SPIE;
+    w_sstatus(sstatus);
+    w_sepc(tf.epc);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn usertrap() -> usize {
+    // Save user PC
+    let sepc = r_sepc();
+    let scause = r_scause();
+    let stval = r_stval();
+    
+    let p = crate::proc::current_process();
+    
+    if (r_sstatus() & SSTATUS_SPP) != 0 {
+        panic!("usertrap: not from user mode");
+    }
+    
+    w_stvec(kernelvec as usize);
+    p.trapframe.epc = sepc;
+    
+    match scause {
+        8 => { // syscall
+            if crate::proc::is_killed(p) {
+                crate::proc::kexit(-1);
+            }
+            p.trapframe.epc += 4;
+            intr_on();
+            crate::syscall::syscall();
+        }
+        scause if scause & (1 << 63) != 0 => { // interrupt
+            let dev = crate::arch::interrupt::devintr();
+            if dev == 2 { crate::proc::yield_now(); }
+        }
+        13 | 15 => { // page fault
+            let read = scause == 13;
+            if crate::mm::page_fault::handle_page_fault(p.pagetable, stval, read).is_err() {
+                crate::proc::set_killed(p);
+            }
+        }
+        _ => {
+            crate::arch::console::printk(format_args!("usertrap: unexpected scause {:#x} pid={}\n", scause, p.pid));
+            crate::proc::set_killed(p);
         }
     }
+    
+    if crate::proc::is_killed(p) {
+        crate::proc::kexit(-1);
+    }
+    
+    prepare_return(&mut p.trapframe);
+    MAKE_SATP(p.pagetable)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kerneltrap() {
+    let sepc = r_sepc();
+    let sstatus = r_sstatus();
+    let scause = r_scause();
+    
+    if (sstatus & SSTATUS_SPP) == 0 {
+        panic!("kerneltrap: not from supervisor mode");
+    }
+    if intr_get() {
+        panic!("kerneltrap: interrupts enabled");
+    }
+    
+    let dev = crate::arch::interrupt::devintr();
+    if dev == 0 {
+        crate::arch::console::printk(format_args!("kerneltrap: scause={:#x} sepc={:#x} stval={:#x}\n", scause, r_sepc(), r_stval()));
+        panic!("kerneltrap");
+    }
+    
+    if dev == 2 {
+        if let Some(_p) = crate::proc::current_process_opt() {
+            crate::proc::yield_now();
+        }
+    }
+    
+    w_sepc(sepc);
+    w_sstatus(sstatus);
 }

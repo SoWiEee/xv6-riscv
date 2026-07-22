@@ -1,2 +1,5 @@
 // kernel/src/syscall/mod.rs
-// System calls - stub for now
+
+pub fn syscall() {
+    // Handle system calls
+}

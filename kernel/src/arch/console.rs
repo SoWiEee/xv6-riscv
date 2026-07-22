@@ -78,3 +78,11 @@ macro_rules! printk {
 pub fn printk_fmt(fmt: fmt::Arguments) {
     let _ = UartWriter.write_fmt(fmt);
 }
+
+pub fn consoleinit() {
+    init();
+}
+
+pub fn printk(args: fmt::Arguments) {
+    let _ = UartWriter.write_fmt(args);
+}

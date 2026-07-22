@@ -1,2 +1,13 @@
 // kernel/src/fs/mod.rs
-// File system - stub for now
+
+pub fn fsinit() {
+    // Initialize file system
+}
+
+pub fn iinit() {
+    // Initialize inode cache
+}
+
+pub fn fileinit() {
+    // Initialize file table
+}
