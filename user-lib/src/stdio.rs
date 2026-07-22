@@ -1,19 +1,35 @@
 // user-lib/src/stdio.rs
-use crate::syscall::*;
+use core::fmt::{self, Write};
 
-pub fn printf(fmt: &str, args: &[&dyn core::fmt::Display]) {
-    // Simplified printf - real implementation would format properly
-    write(1, fmt.as_bytes());
+struct Stdout;
+
+impl Write for Stdout {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        crate::syscall::write(1, s.as_bytes());
+        Ok(())
+    }
 }
 
-pub fn println(fmt: &str) {
-    write(1, fmt.as_bytes());
-    write(1, b"\n");
+pub fn _print(args: fmt::Arguments) {
+    Stdout.write_fmt(args).unwrap();
+}
+
+#[macro_export]
+macro_rules! print {
+    ($($arg:tt)*) => {
+        $crate::stdio::_print(format_args!($($arg)*))
+    };
+}
+
+#[macro_export]
+macro_rules! println {
+    () => { $crate::print!("\n") };
+    ($($arg:tt)*) => { $crate::print!("{}\n", format_args!($($arg)*)) };
 }
 
 pub fn getc() -> Option<u8> {
     let mut buf = [0u8; 1];
-    if read(0, &mut buf) > 0 {
+    if crate::syscall::read(0, &mut buf) > 0 {
         Some(buf[0])
     } else {
         None
@@ -21,5 +37,5 @@ pub fn getc() -> Option<u8> {
 }
 
 pub fn putc(c: u8) {
-    write(1, &[c]);
+    crate::syscall::write(1, &[c]);
 }

@@ -6,6 +6,14 @@ edition = "2024"
 [dependencies]
 xv6-user-lib = { path = "../user-lib" }
 
+[profile.dev]
+panic = "abort"
+lto = true
+
+[profile.release]
+panic = "abort"
+lto = true
+
 [[bin]]
 name = "sh"
 path = "src/bin/sh.rs"
@@ -13,3 +21,15 @@ path = "src/bin/sh.rs"
 [[bin]]
 name = "ls"
 path = "src/bin/ls.rs"
+
+[[bin]]
+name = "cat"
+path = "src/bin/cat.rs"
+
+[[bin]]
+name = "init"
+path = "src/bin/init.rs"
+
+[[bin]]
+name = "init_test"
+path = "src/bin/init_test.rs"

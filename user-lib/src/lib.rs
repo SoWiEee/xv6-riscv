@@ -8,6 +8,9 @@ pub mod string;
 pub mod fs;
 pub mod process;
 
+// Re-export macros (they're already exported via #[macro_export])
+// pub use stdio::{print, println};
+
 // Syscall numbers matching xv6
 pub const SYS_FORK: usize = 1;
 pub const SYS_EXIT: usize = 2;
@@ -26,12 +29,10 @@ pub const SYS_SBRK: usize = 14;
 pub const SYS_SLEEP: usize = 15;
 pub const SYS_UPTIME: usize = 16;
 pub const SYS_OPEN: usize = 17;
-pub const SYS_WRITE: usize = 18;
-pub const SYS_MKNOD: usize = 19;
-pub const SYS_UNLINK: usize = 20;
-pub const SYS_LINK: usize = 21;
-pub const SYS_MKDIR: usize = 22;
-pub const SYS_CLOSE: usize = 23;
+pub const SYS_MKNOD: usize = 18;
+pub const SYS_UNLINK: usize = 19;
+pub const SYS_LINK: usize = 20;
+pub const SYS_MKDIR: usize = 21;
 
 // Syscall macro
 #[macro_export]
@@ -141,4 +142,25 @@ macro_rules! syscall {
         }
         ret
     }};
+}
+
+// Panic handler
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    loop {}
+}
+
+// Global allocator
+use linked_list_allocator::LockedHeap;
+
+#[global_allocator]
+static ALLOCATOR: LockedHeap = LockedHeap::empty();
+
+pub fn init_heap() {
+    use crate::syscall::sbrk;
+    const HEAP_SIZE: usize = 1024 * 1024; // 1MB
+    let heap_start = sbrk(HEAP_SIZE as isize);
+    unsafe {
+        ALLOCATOR.lock().init(heap_start, HEAP_SIZE);
+    }
 }
