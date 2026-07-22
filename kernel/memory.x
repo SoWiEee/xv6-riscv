@@ -14,8 +14,16 @@ SECTIONS
         *(.text.*)
         *(.rodata)
         *(.rodata.*)
+    } > KERNEL
+    
+    etext = .;
+    
+    .data : {
         *(.data)
         *(.data.*)
+    } > KERNEL
+    
+    .bss : {
         *(.bss)
         *(.bss.*)
         *(.sbss)
@@ -24,6 +32,8 @@ SECTIONS
         *(.eh_frame)
         *(.eh_frame.*)
     } > KERNEL
+    
+    end = .;
     
     .stack (NOLOAD) : {
         . = ALIGN(16);

@@ -4,8 +4,6 @@
 
 extern crate alloc;
 
-use linked_list_allocator::LockedHeap;
-
 pub mod arch;
 pub mod mm;
 pub mod sync;
@@ -16,9 +14,6 @@ pub mod syscall;
 pub mod trap;
 
 use core::panic::PanicInfo;
-
-#[global_allocator]
-static ALLOCATOR: LockedHeap = LockedHeap::empty();
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {

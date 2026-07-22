@@ -1,16 +1,15 @@
 // kernel/src/arch/paging.rs
-use super::registers::{PTE_V, PTE_W, PTE_U, PGSIZE};
+use super::registers::PGSIZE;
 use super::asm::{sfence_vma, w_satp, MAKE_SATP};
 use core::ptr::NonNull;
-
-pub type PhysAddr = usize;
-pub type VirtAddr = usize;
-pub type PhysPageNum = usize;
-pub type VirtPageNum = usize;
+use crate::mm::address::{PhysAddr, VirtAddr, PhysPageNum, VirtPageNum};
 
 pub const PAGE_SIZE: usize = 4096;
 pub const VPBITS: usize = 39;
 pub const PPBITS: usize = 56;
+
+// Re-export PTE constants
+pub use super::registers::{PTE_V, PTE_R, PTE_W, PTE_X, PTE_U};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(transparent)]
@@ -19,8 +18,8 @@ pub struct PageTableEntry(pub u64);
 impl PageTableEntry {
     pub const fn new() -> Self { Self(0) }
     pub fn is_valid(&self) -> bool { (self.0 & PTE_V) != 0 }
-    pub fn ppn(&self) -> PhysPageNum { ((self.0 >> 10) & ((1 << 44) - 1)) as usize }
-    pub fn set_ppn(&mut self, ppn: PhysPageNum) { self.0 = (self.0 & 0x3FF) | ((ppn as u64) << 10) }
+    pub fn ppn(&self) -> PhysPageNum { PhysPageNum::new(((self.0 >> 10) & ((1 << 44) - 1)) as usize) }
+    pub fn set_ppn(&mut self, ppn: PhysPageNum) { self.0 = (self.0 & 0x3FF) | ((ppn.0 as u64) << 10) }
     pub fn flags(&self) -> u64 { self.0 & 0x3FF }
     pub fn set_flags(&mut self, flags: u64) { self.0 = (self.0 & !0x3FF) | flags }
     pub fn is_user(&self) -> bool { (self.0 & PTE_U) != 0 }
@@ -42,7 +41,7 @@ impl PageTable {
     }
 
     pub fn get_mut(&mut self, vpn: VirtPageNum, _level: usize) -> &mut PageTableEntry {
-        &mut self.entries[vpn & 0x1FF]
+        &mut self.entries[vpn.0 & 0x1FF]
     }
 }
 
@@ -56,7 +55,7 @@ impl PageTableWalker {
     pub fn walk(&self, vaddr: VirtAddr, alloc: bool) -> Option<&mut PageTableEntry> {
         let mut pt = self.root;
         for level in (1..=2).rev() {
-            let vpn = (vaddr >> (12 + level * 9)) & 0x1FF;
+            let vpn = (vaddr.0 >> (12 + level * 9)) & 0x1FF;
             let pte = unsafe { &mut *(Self::pte_ptr(pt, vpn) as *mut PageTableEntry) };
             if pte.is_valid() {
                 pt = pte.ppn();
@@ -71,12 +70,12 @@ impl PageTableWalker {
                 return None;
             }
         }
-        let vpn = (vaddr >> 12) & 0x1FF;
+        let vpn = (vaddr.0 >> 12) & 0x1FF;
         Some(unsafe { &mut *(Self::pte_ptr(pt, vpn) as *mut PageTableEntry) })
     }
 
     fn pte_ptr(ppn: PhysPageNum, vpn: usize) -> usize {
-        (ppn << 12) + (vpn * 8)
+        (ppn.0 << 12) + (vpn * 8)
     }
 
     pub fn map_pages(&mut self, vaddr: VirtAddr, paddr: PhysAddr, pages: usize, flags: u64) -> Result<(), &'static str> {
@@ -85,7 +84,7 @@ impl PageTableWalker {
             if pte.is_valid() {
                 return Err("remap");
             }
-            pte.set_ppn((paddr + i * PAGE_SIZE) >> 12);
+            pte.set_ppn(PhysPageNum::new((paddr.0 + i * PAGE_SIZE) >> 12));
             pte.set_flags(flags | PTE_V);
         }
         Ok(())
@@ -102,6 +101,6 @@ pub fn kvm_init() -> PhysPageNum {
 }
 
 pub fn kvm_init_hart(root: PhysPageNum) {
-    w_satp(MAKE_SATP(root));
+    w_satp(MAKE_SATP(root.0));
     sfence_vma();
 }

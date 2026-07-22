@@ -1,7 +1,7 @@
 // kernel/src/proc/mod.rs
 use crate::arch::trap::TrapFrame;
 use crate::arch::trap::Context;
-use crate::arch::paging::PhysPageNum;
+use crate::mm::address::PhysPageNum;
 use core::fmt::Write;
 
 pub struct Process {
@@ -10,6 +10,7 @@ pub struct Process {
     pub context: Context,
     pub pagetable: PhysPageNum,
     pub killed: bool,
+    pub sz: usize,
 }
 
 static mut PROCESSES: [Option<Process>; 64] = [const { None }; 64];

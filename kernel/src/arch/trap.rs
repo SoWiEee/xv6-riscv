@@ -1,11 +1,11 @@
 // kernel/src/arch/trap.rs
 use super::asm::*;
-use core::fmt::Write;
+use crate::mm::address::PhysPageNum;
 
 #[repr(C, align(16))]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct TrapFrame {
-    pub kernel_satp: usize,
+    pub kernel_satp: PhysPageNum,
     pub kernel_sp: usize,
     pub kernel_trap: usize,
     pub epc: usize,
@@ -19,14 +19,6 @@ pub struct TrapFrame {
     pub t2: usize,
     pub s0: usize,
     pub s1: usize,
-    pub a0: usize,
-    pub a1: usize,
-    pub a2: usize,
-    pub a3: usize,
-    pub a4: usize,
-    pub a5: usize,
-    pub a6: usize,
-    pub a7: usize,
     pub s2: usize,
     pub s3: usize,
     pub s4: usize,
@@ -37,6 +29,14 @@ pub struct TrapFrame {
     pub s9: usize,
     pub s10: usize,
     pub s11: usize,
+    pub a0: usize,
+    pub a1: usize,
+    pub a2: usize,
+    pub a3: usize,
+    pub a4: usize,
+    pub a5: usize,
+    pub a6: usize,
+    pub a7: usize,
     pub t3: usize,
     pub t4: usize,
     pub t5: usize,
@@ -46,12 +46,12 @@ pub struct TrapFrame {
 impl TrapFrame {
     pub const fn new() -> Self {
         Self {
-            kernel_satp: 0, kernel_sp: 0, kernel_trap: 0, epc: 0,
+            kernel_satp: PhysPageNum::new(0), kernel_sp: 0, kernel_trap: 0, epc: 0,
             kernel_hartid: 0, ra: 0, sp: 0, gp: 0, tp: 0,
             t0: 0, t1: 0, t2: 0, s0: 0, s1: 0,
-            a0: 0, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0, a6: 0, a7: 0,
             s2: 0, s3: 0, s4: 0, s5: 0, s6: 0, s7: 0,
             s8: 0, s9: 0, s10: 0, s11: 0,
+            a0: 0, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0, a6: 0, a7: 0,
             t3: 0, t4: 0, t5: 0, t6: 0,
         }
     }
@@ -105,7 +105,7 @@ pub fn prepare_return(tf: &mut TrapFrame) {
     intr_off();
     let trampoline_uservec = TRAMPOLINE + (uservec as usize - TRAMPOLINE);
     w_stvec(trampoline_uservec);
-    tf.kernel_satp = r_satp();
+    tf.kernel_satp = PhysPageNum::new(r_satp() & ((1 << 44) - 1));
     tf.kernel_sp = tf.kernel_sp; // set by caller
     tf.kernel_trap = usertrap as usize;
     tf.kernel_hartid = r_tp();
@@ -147,7 +147,11 @@ pub extern "C" fn usertrap() -> usize {
         }
         13 | 15 => { // page fault
             let read = scause == 13;
-            if crate::mm::page_fault::handle_page_fault(p.pagetable, stval, read).is_err() {
+            if crate::mm::page_fault::handle_page_fault(
+                &mut crate::mm::page_table::PageTable::from_root(p.pagetable), 
+                stval, 
+                read
+            ).is_err() {
                 crate::proc::set_killed(p);
             }
         }
@@ -162,7 +166,7 @@ pub extern "C" fn usertrap() -> usize {
     }
     
     prepare_return(&mut p.trapframe);
-    MAKE_SATP(p.pagetable)
+    MAKE_SATP(p.pagetable.0)
 }
 
 #[unsafe(no_mangle)]

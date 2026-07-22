@@ -1,10 +1,11 @@
 // kernel/src/arch/init.rs
 use super::asm::*;
-use super::paging::{kvm_init, kvm_init_hart};
 use super::interrupt::*;
 use crate::mm::frame_allocator::kinit;
 use crate::proc::procinit;
 use crate::arch::console::consoleinit;
+use crate::mm::page_table::{kvminit, kvminithart};
+use crate::mm::address::PhysAddr;
 
 static mut STARTED: bool = false;
 
@@ -14,9 +15,18 @@ pub extern "C" fn init() -> ! {
     if hart_id == 0 {
         consoleinit();
         crate::arch::console::printk(format_args!("\nxv6-rust kernel is booting\n\n"));
-        kinit();
-        let root = kvm_init();
-        kvm_init_hart(root);
+        // Get physical memory range from linker script
+        unsafe extern "C" {
+            fn end();
+        }
+        let start = end as usize;
+        let end_addr = crate::arch::asm::PHYSTOP;
+        kinit(
+            PhysAddr::new(start),
+            PhysAddr::new(end_addr),
+        );
+        kvminit();
+        kvminithart();
         procinit();
         trapinit();
         plic_init();
@@ -34,7 +44,7 @@ pub extern "C" fn init() -> ! {
         while !started() {
             core::hint::spin_loop();
         }
-        kvm_init_hart(crate::mm::paging::kernel_pagetable());
+        kvminithart();
         trapinit();
         plic_init_hart();
     }

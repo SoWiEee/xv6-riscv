@@ -1,2 +1,4 @@
 // kernel/src/sync/mod.rs
-// Synchronization primitives - stub for now
+pub mod spinlock;
+
+pub use spinlock::{SpinLock, SpinLockGuard};
