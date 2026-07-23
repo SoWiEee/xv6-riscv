@@ -195,13 +195,26 @@ fn map_kernel(pt: &mut PageTable) {
     // Trampoline
     pt.map(VirtAddr(crate::arch::asm::TRAMPOLINE), PhysAddr(crate::arch::asm::TRAMPOLINE), PTE_R | PTE_X).unwrap();
     
-    // Kernel stacks for each CPU - map 1MB for stacks
+    // Kernel stacks for each CPU - map 1MB for stacks with guard pages
+    // 8 CPUs, each gets 128KB (32 pages): 31 pages stack + 1 guard page
     let stack_top = crate::arch::asm::PHYSTOP;
-    let stack_pages = 1 * 1024 * 1024 / PAGE_SIZE;
-    for i in 0..stack_pages {
-        let vaddr = VirtAddr(stack_top - (i + 1) * PAGE_SIZE);
-        let paddr = PhysAddr(stack_top - (i + 1) * PAGE_SIZE);
-        pt.map(vaddr, paddr, PTE_R | PTE_W).unwrap();
+    const NCPU: usize = 8;
+    const STACK_PAGES_PER_CPU: usize = 31; // 124KB stack
+    const GUARD_PAGES_PER_CPU: usize = 1;  // 4KB guard page
+    const PAGES_PER_CPU: usize = STACK_PAGES_PER_CPU + GUARD_PAGES_PER_CPU; // 32 pages = 128KB
+    
+    for cpu in 0..NCPU {
+        // Stack grows down, so stack is at higher addresses, guard at lower
+        let cpu_stack_top = stack_top - cpu * PAGES_PER_CPU * PAGE_SIZE;
+        
+        // Map stack pages (31 pages)
+        for i in 0..STACK_PAGES_PER_CPU {
+            let vaddr = VirtAddr(cpu_stack_top - (i + 1) * PAGE_SIZE);
+            let paddr = PhysAddr(cpu_stack_top - (i + 1) * PAGE_SIZE);
+            pt.map(vaddr, paddr, PTE_R | PTE_W).unwrap();
+        }
+        // Guard page at cpu_stack_top - STACK_PAGES_PER_CPU * PAGE_SIZE (lowest address of this CPU's region)
+        // Left unmapped to catch stack overflow
     }
 }
 
