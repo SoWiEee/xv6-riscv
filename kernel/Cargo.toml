@@ -31,3 +31,12 @@ panic = "abort"
 
 [target.riscv64imac-unknown-none-elf]
 runner = "qemu-system-riscv64 -machine virt -nographic -bios none -kernel"
+rustflags = [
+    "-C", "target-feature=+zicsr,+zifencei",
+]
+
+[build]
+target = "riscv64imac-unknown-none-elf"
+
+[lib]
+name = "xv6_kernel"

@@ -34,14 +34,16 @@ pub fn init() {
 
 fn write_reg(offset: usize, value: u8) {
     let addr = UART_BASE + offset;
-    unsafe { asm!("sb {}, 0({})", in(reg) value, in(reg) addr) };
+    unsafe {
+        core::ptr::write_volatile(addr as *mut u8, value);
+    }
 }
 
 fn read_reg(offset: usize) -> u8 {
     let addr = UART_BASE + offset;
-    let val: u8;
-    unsafe { asm!("lbu {}, 0({})", out(reg) val, in(reg) addr) };
-    val
+    unsafe {
+        core::ptr::read_volatile(addr as *const u8)
+    }
 }
 
 pub fn putchar(c: u8) {

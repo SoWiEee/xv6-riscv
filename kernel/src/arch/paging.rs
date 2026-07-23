@@ -1,6 +1,6 @@
 // kernel/src/arch/paging.rs
 use super::registers::PGSIZE;
-use super::asm::{sfence_vma, w_satp, MAKE_SATP};
+use super::asm::{sfence_vma, w_satp, make_satp};
 use core::ptr::NonNull;
 use crate::mm::address::{PhysAddr, VirtAddr, PhysPageNum, VirtPageNum};
 
@@ -102,6 +102,6 @@ pub fn kvm_init() -> PhysPageNum {
 }
 
 pub fn kvm_init_hart(root: PhysPageNum) {
-    w_satp(MAKE_SATP(root.0));
+    w_satp(make_satp(root.0));
     sfence_vma();
 }

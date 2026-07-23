@@ -110,7 +110,7 @@ impl PageTable {
     /// 
     /// Also executes `sfence.vma` to flush TLB.
     pub fn activate(&self) {
-        crate::arch::asm::w_satp(crate::arch::asm::MAKE_SATP(self.root_ppn.0));
+        crate::arch::asm::w_satp(crate::arch::asm::make_satp(self.root_ppn.0));
         sfence_vma();
     }
 }

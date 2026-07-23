@@ -218,7 +218,7 @@ pub extern "C" fn usertrap() -> usize {
     
     let satp = {
         let inner = p.lock();
-        inner.pagetable.as_ref().map(|pt| MAKE_SATP(pt.root_ppn().0)).unwrap_or(0)
+        inner.pagetable.as_ref().map(|pt| make_satp(pt.root_ppn().0)).unwrap_or(0)
     };
     satp
 }

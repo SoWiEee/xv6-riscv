@@ -6,7 +6,7 @@ use crate::proc::process::Proc;
 use crate::mm::page_table::{PageTable, uvmcreate, uvmalloc, uvmfree, uvmcopy, kernel_pagetable};
 use crate::mm::frame_allocator::{alloc_page, free_page};
 use crate::mm::address::{PhysAddr, PhysPageNum, VirtAddr};
-use crate::arch::asm::{MAKE_SATP, r_satp, w_satp, sfence_vma};
+use crate::arch::asm::{make_satp, r_satp, w_satp, sfence_vma};
 use crate::sync::spinlock::SpinLock;
 use crate::fs::{File, Inode, filealloc, fileclose, fileread, filewrite, filedup, iupdate, namei, nameiparent, dirlink, dirlookup, ialloc, iput, begin_op, end_op, I_DIR, I_FILE, I_DEV};
 use crate::arch::console::printk;

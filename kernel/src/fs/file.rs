@@ -178,7 +178,7 @@ pub fn filealloc() -> Option<File> {
     None
 }
 
-pub fn fileclose(f: File) {
+pub fn fileclose(f: &File) {
     let should_close = f.dec_ref();
     if !should_close {
         return;

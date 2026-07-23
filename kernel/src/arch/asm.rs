@@ -2,7 +2,7 @@
 use core::arch::asm;
 
 macro_rules! read_csr {
-    ($csr:expr) => {{
+    ($csr:ident) => {{
         let val: usize;
         unsafe { asm!(concat!("csrr {}, ", stringify!($csr)), out(reg) val) };
         val
@@ -10,8 +10,28 @@ macro_rules! read_csr {
 }
 
 macro_rules! write_csr {
-    ($csr:expr, $val:expr) => {{
+    ($csr:ident, $val:expr) => {{
         unsafe { asm!(concat!("csrw ", stringify!($csr), ", {}"), in(reg) $val) };
+    }};
+}
+
+macro_rules! swap_csr {
+    ($csr:ident, $val:expr) => {{
+        let old: usize;
+        unsafe { asm!(concat!("csrrw {}, ", stringify!($csr), ", {}"), out(reg) old, in(reg) $val) };
+        old
+    }};
+}
+
+macro_rules! set_csr {
+    ($csr:ident, $val:expr) => {{
+        unsafe { asm!(concat!("csrs ", stringify!($csr), ", {}"), in(reg) $val) };
+    }};
+}
+
+macro_rules! clear_csr {
+    ($csr:ident, $val:expr) => {{
+        unsafe { asm!(concat!("csrc ", stringify!($csr), ", {}"), in(reg) $val) };
     }};
 }
 
@@ -93,11 +113,11 @@ pub fn r_sip() -> usize {
     read_csr!(sip)
 }
 
-/// Read STP (thread pointer / hartid)
+/// Read STP (thread pointer / hartid) - CSR 0x106
 #[inline]
 pub fn r_tp() -> usize {
     let val: usize;
-    unsafe { asm!("mv {}, tp", out(reg) val) };
+    unsafe { asm!("csrr {}, 0x106", out(reg) val) };
     val
 }
 
@@ -116,13 +136,13 @@ pub fn w_stimecmp(val: usize) {
 /// Enable interrupts
 #[inline]
 pub fn intr_on() {
-    unsafe { asm!("csrs sstatus, {}", in(reg) (1 << 1)) }; // SIE bit
+    set_csr!(sstatus, 1 << 1); // SIE bit
 }
 
 /// Disable interrupts
 #[inline]
 pub fn intr_off() {
-    unsafe { asm!("csrc sstatus, {}", in(reg) (1 << 1)) };
+    clear_csr!(sstatus, 1 << 1);
 }
 
 /// Check if interrupts enabled
@@ -161,7 +181,10 @@ pub const PHYSTOP: usize = KERNBASE + 128 * 1024 * 1024;
 pub const UART0: usize = 0x10000000;
 pub const VIRTIO0: usize = 0x10001000;
 pub const PLIC: usize = 0x0C000000;
-pub const MAKE_SATP: fn(usize) -> usize = |ppn| (8 << 60) | (ppn << 12); // Sv39 mode
+
+pub const fn make_satp(ppn: usize) -> usize {
+    (8 << 60) | (ppn << 12) // Sv39 mode
+}
 
 pub const SSTATUS_SPP: usize = 1 << 8;
 pub const SSTATUS_SPIE: usize = 1 << 5;

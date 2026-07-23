@@ -9,19 +9,31 @@ fn main() {
     
     let out_dir = env::var("OUT_DIR").unwrap();
     
-    // Compile assembly files
+    // Always use the cross-compiler for kernel assembly files since they contain RISC-V specific instructions
+    let compiler = "riscv64-unknown-elf-gcc";
+    let arch_flag = "rv64imac_zicsr";
+    let abi_flag = "lp64";
+    
+    // Compile assembly files with explicit cross-compiler
     cc::Build::new()
+        .compiler(compiler)
         .file("src/arch/asm.S")
-        .flag("-march=rv64imac_zicsr")
-        .flag("-mabi=lp64")
+        .flag(&format!("-march={}", arch_flag))
+        .flag(&format!("-mabi={}", abi_flag))
+        .flag("-nostdlib")
+        .flag("-static")
+        .define("__ASSEMBLY__", None)
+        .no_default_flags(true)
         .compile("xv6asm");
     
     // Compile entry.S to object file
     let entry_obj = format!("{}/entry.o", out_dir);
-    let status = Command::new("riscv64-unknown-elf-gcc")
+    let status = Command::new(compiler)
         .args([
-            "-march=rv64imac_zicsr",
-            "-mabi=lp64",
+            &format!("-march={}", arch_flag),
+            &format!("-mabi={}", abi_flag),
+            "-nostdlib",
+            "-static",
             "-c",
             "src/arch/entry.S",
             "-o",

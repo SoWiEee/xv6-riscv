@@ -33,3 +33,6 @@ path = "src/bin/init.rs"
 [[bin]]
 name = "init_test"
 path = "src/bin/init_test.rs"
+
+[build]
+target = "riscv64gc-unknown-linux-gnu"
