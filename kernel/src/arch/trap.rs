@@ -124,8 +124,14 @@ pub fn kernelvec_addr() -> usize {
 /// Called from scheduler to switch between processes.
 pub fn context_switch(old: &mut Context, new: &Context, tf_ptr: usize) {
     unsafe { 
-        core::arch::asm!("mv a0, {}", in(reg) tf_ptr);
-        swtch(old as *mut Context, new as *const Context) 
+        core::arch::asm!(
+            "mv a0, {0}",
+            "call swtch",
+            in(reg) tf_ptr,
+            in("a0") old,
+            in("a1") new,
+            options(noreturn, nostack)
+        )
     }
 }
 

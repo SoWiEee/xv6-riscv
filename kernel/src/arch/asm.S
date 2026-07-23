@@ -89,6 +89,9 @@ uservec:
 
 /* userret: return to user mode */
 userret:
+    /* get trapframe pointer from sscratch */
+    csrr a0, sscratch
+    
     /* set up sstatus for user mode */
     csrr t0, sstatus
     li t1, ~0x100     /* clear SPP (bit 8) */
@@ -97,17 +100,17 @@ userret:
     or t0, t0, t1
     csrw sstatus, t0
     
-    /* set sepc from trapframe */
+    /* save kernel_satp and epc to temp registers BEFORE restoring a0 */
     ld t0, 24(a0)     /* epc */
     csrw sepc, t0
+    ld t1, 0(a0)      /* kernel_satp (full satp value) */
     
     /* restore user registers */
     ld ra, 40(a0)
     ld sp, 48(a0)
     ld gp, 56(a0)
     ld tp, 64(a0)
-    ld t0, 72(a0)
-    ld t1, 80(a0)
+    /* t0, t1 hold epc, satp, need to restore t2 from trapframe */
     ld t2, 88(a0)
     ld s0, 96(a0)
     ld s1, 104(a0)
@@ -133,10 +136,11 @@ userret:
     ld t4, 264(a0)
     ld t5, 272(a0)
     ld t6, 280(a0)
+    /* restore t0, t1 from saved values */
+    /* t0 already has epc (in sepc), t1 has satp */
     
     /* switch to user page table */
-    ld t0, 0(a0)      /* kernel_satp */
-    csrrw t1, satp, t0
+    csrrw t0, satp, t1
     sfence.vma
     
     sret

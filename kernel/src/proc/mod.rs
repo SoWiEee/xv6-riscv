@@ -118,15 +118,16 @@ pub fn userinit() {
     
     // Set up trapframe
     let tf = unsafe { &mut *inner.trapframe };
-    // kernel_satp should be the user page table's satp value for userret to switch to
+    // kernel_satp should be the user page table's full satp value (mode + PPN) for userret to switch to
     if let Some(pt) = &inner.pagetable {
-        tf.kernel_satp = crate::mm::address::PhysPageNum::new(make_satp(pt.root_ppn().0) & ((1 << 44) - 1));
+        tf.kernel_satp = crate::mm::address::PhysPageNum::new(make_satp(pt.root_ppn().0));
     } else {
         tf.kernel_satp = crate::mm::page_table::kernel_pagetable();
     }
     tf.kernel_sp = inner.kstack + 4096;
     tf.kernel_trap = crate::arch::trap::usertrap as usize;
     tf.epc = entry;
+    crate::arch::console::printk(format_args!("userinit: tf.epc={:#x} tf@={:#x}\n", tf.epc, inner.trapframe as usize));
     
     // Set up user stack
     let (sp, argv_ptr) = crate::elf::setup_user_stack(
