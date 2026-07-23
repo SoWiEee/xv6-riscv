@@ -17,6 +17,9 @@ impl Condvar {
         let p = current_process();
         let mut q = self.wait_queue.acquire();
         q.push_back(p as *const Proc as usize);
+        p.set_state(ProcState::Sleeping);
+        // Release the wait queue lock before releasing the external lock
+        drop(q);
         // Release the external lock while sleeping
         unsafe {
             release_raw(&lock.locked);

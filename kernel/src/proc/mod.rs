@@ -131,6 +131,8 @@ pub fn sleep(chan: usize, lock: &SpinLock<impl Sized>) {
     queues.entry(chan).or_default().push(p as *const Proc as usize);
     p.set_state(ProcState::Sleeping);
     p.set_chan(chan);
+    // Release the wait queue lock before releasing the external lock
+    drop(queues);
     // Release the lock by manually unlocking
     // SAFETY: The caller guarantees the lock is held but no guard exists
     unsafe {
