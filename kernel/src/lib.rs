@@ -1,6 +1,7 @@
 // kernel/src/lib.rs
 #![no_std]
 #![no_main]
+#![feature(alloc_error_handler)]
 
 extern crate alloc;
 
@@ -23,11 +24,10 @@ fn panic(info: &PanicInfo) -> ! {
     }
 }
 
-// Use a default allocator that never fails for now
-// #[alloc_error_handler] - unstable, will use linked_list_allocator which handles OOM
-// fn alloc_error(layout: core::alloc::Layout) -> ! {
-//     panic!("Allocation failed: {:?}", layout);
-// }
+#[alloc_error_handler]
+fn alloc_error(layout: core::alloc::Layout) -> ! {
+    panic!("Allocation failed: {:?}", layout);
+}
 
 // _start is now in entry.S, this is just a placeholder
 // arch_init_init is now in asm.S
