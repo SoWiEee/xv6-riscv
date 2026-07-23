@@ -12,6 +12,12 @@ cp target/riscv64imac-unknown-none-elf/release/ls user/_ls
 cp target/riscv64imac-unknown-none-elf/release/cat user/_cat
 cp target/riscv64imac-unknown-none-elf/release/init user/_init
 
+# Rebuild the kernel AFTER refreshing user/_init: the first process (userinit)
+# runs an init image embedded into the kernel at compile time via
+# include_bytes!("../../user/_init"), so a stale kernel would boot the old init.
+echo "Rebuilding kernel to embed the fresh init..."
+cargo build --release --target riscv64imac-unknown-none-elf -p xv6-kernel
+
 # Create fs.img with only the programs that exist
 echo "Creating fs.img..."
 ./mkfs/mkfs fs.img README \

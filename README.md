@@ -27,38 +27,64 @@ This project is a faithful Rust reimplementation of [xv6-riscv](https://github.c
 
 ### Prerequisites
 
-- Rust toolchain (1.75+): `rustup target add riscv64gc-unknown-none-elf`
-- RISC-V toolchain: `riscv64-unknown-elf-gcc` (for user programs)
-- QEMU: `qemu-system-riscv64` (virt machine)
-- `ld.lld` linker
+- **Nightly Rust** (edition 2024 + unstable features; `rustc 1.99.0-nightly` is known-good):
+  `rustup target add riscv64imac-unknown-none-elf`
+- RISC-V cross toolchain: `riscv64-unknown-elf-gcc` (linker, assembler for `arch/*.S`, and host `gcc` to build `mkfs`)
+- QEMU ≥ 7.2: `qemu-system-riscv64` (`-machine virt`)
 
-### Building
+> `riscv64imac-unknown-none-elf` is the **only** target actually used — for both
+> the kernel and the user programs. Ignore stale mentions of `riscv64gc-*` or
+> `*-linux-gnu` elsewhere in the docs. `.cargo/config.toml` sets the linker and
+> `rustflags` per target but sets **no default target**, so `--target
+> riscv64imac-unknown-none-elf` must be passed to every `cargo` invocation.
+
+### Building & Running (development)
+
+Prefer the scripts — they build in the correct order and also (re)build the C
+`mkfs` and repack `fs.img`:
 
 ```bash
-# Build kernel and user programs
-cargo build --release
-
-# Or use the provided Makefile
-make
+./run_usertests.sh      # build kernel + users, repack fs.img, boot QEMU
+./build_rust_users.sh   # rebuild ONLY the Rust user programs + repack fs.img
 ```
 
-### Running
+Manual equivalents (mind the build order below):
 
 ```bash
-# Run in QEMU
-cargo run --release
+# 1. User programs first — each user/src/bin/*.rs is one program.
+cargo build --release --target riscv64imac-unknown-none-elf -p xv6-user
+# copy release binaries to the user/_<name> paths mkfs expects (see build_rust_users.sh)
+cp target/riscv64imac-unknown-none-elf/release/{sh,ls,cat,init} user/   # -> user/_sh etc.
 
-# Or with Makefile
-make qemu
+# 2. Kernel SECOND. init is embedded into the kernel image at compile time via
+#    include_bytes!("../../user/_init") (kernel/src/elf.rs). The very first
+#    process (userinit) runs THIS embedded copy, NOT the one in fs.img — so any
+#    change to init (or user-lib code it links) needs BOTH user and kernel
+#    rebuilt, in that order, or the running init will be stale.
+cargo build --release --target riscv64imac-unknown-none-elf -p xv6-kernel
+
+# 3. mkfs is C (host gcc); repack the filesystem image QEMU boots.
+gcc -Wno-unknown-attributes -I. -o mkfs/mkfs mkfs/mkfs.c
+./mkfs/mkfs fs.img README user/_cat user/_echo user/_init user/_sh ...
+
+# 4. Boot (single hart while SMP bring-up is in progress).
+qemu-system-riscv64 -machine virt -bios none \
+  -kernel target/riscv64imac-unknown-none-elf/release/xv6-kernel \
+  -m 128M -smp 1 -nographic -global virtio-mmio.force-legacy=false \
+  -drive file=fs.img,if=none,format=raw,id=x0 \
+  -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
 ```
+
+The root `Makefile` builds the **original C kernel** (`make qemu`), not the Rust
+rewrite — use it only for the C reference build or to build `mkfs`.
 
 ### Testing
 
 ```bash
-# Run unit tests
-cargo test
+# Host unit tests for a crate
+cargo test -p xv6-kernel        # (or xv6-user-lib)
 
-# Run integration tests (requires QEMU)
+# Integration test: boots QEMU, runs usertests, diffs output
 cargo test --test integration
 ```
 

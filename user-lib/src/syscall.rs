@@ -1,6 +1,24 @@
 // user-lib/src/syscall.rs
 use crate::*;
 
+/// Maximum path length passed to the kernel (including the NUL terminator).
+const PATH_MAX: usize = 128;
+
+/// Copy `s` into a NUL-terminated stack buffer and invoke `f` with a pointer to
+/// it. Rust `&str`s are NOT NUL-terminated, but every path-based syscall expects
+/// a C string and the kernel reads until it sees a `\0`. Passing `s.as_ptr()`
+/// directly makes the kernel run off the end of the string into whatever bytes
+/// follow it in `.rodata` (e.g. reading "console" as "consolesh"). Terminating
+/// here, before crossing into the kernel, is the single choke point that keeps
+/// all callers correct.
+fn with_cstr<R>(s: &str, f: impl FnOnce(*const u8) -> R) -> R {
+    let mut buf = [0u8; PATH_MAX];
+    let n = s.len().min(PATH_MAX - 1);
+    buf[..n].copy_from_slice(&s.as_bytes()[..n]);
+    // buf[n] is already 0 -> NUL terminator.
+    f(buf.as_ptr())
+}
+
 pub fn fork() -> isize {
     syscall!(SYS_FORK) as isize
 }
@@ -35,7 +53,7 @@ pub fn kill(pid: i32) -> isize {
 }
 
 pub fn exec(path: &str, argv: &[*const u8]) -> isize {
-    syscall!(SYS_EXEC, path.as_ptr() as usize, argv.as_ptr() as usize) as isize
+    with_cstr(path, |p| syscall!(SYS_EXEC, p as usize, argv.as_ptr() as usize) as isize)
 }
 
 pub fn fstat(fd: i32, st: &mut Stat) -> isize {
@@ -43,7 +61,7 @@ pub fn fstat(fd: i32, st: &mut Stat) -> isize {
 }
 
 pub fn chdir(path: &str) -> isize {
-    syscall!(SYS_CHDIR, path.as_ptr() as usize) as isize
+    with_cstr(path, |p| syscall!(SYS_CHDIR, p as usize) as isize)
 }
 
 pub fn dup(fd: i32) -> isize {
@@ -80,23 +98,23 @@ pub fn putc(c: u8) {
 }
 
 pub fn open(path: &str, flags: i32) -> isize {
-    syscall!(SYS_OPEN, path.as_ptr() as usize, flags as usize) as isize
+    with_cstr(path, |p| syscall!(SYS_OPEN, p as usize, flags as usize) as isize)
 }
 
 pub fn mknod(path: &str, major: i32, minor: i32) -> isize {
-    syscall!(SYS_MKNOD, path.as_ptr() as usize, major as usize, minor as usize) as isize
+    with_cstr(path, |p| syscall!(SYS_MKNOD, p as usize, major as usize, minor as usize) as isize)
 }
 
 pub fn unlink(path: &str) -> isize {
-    syscall!(SYS_UNLINK, path.as_ptr() as usize) as isize
+    with_cstr(path, |p| syscall!(SYS_UNLINK, p as usize) as isize)
 }
 
 pub fn link(old: &str, new: &str) -> isize {
-    syscall!(SYS_LINK, old.as_ptr() as usize, new.as_ptr() as usize) as isize
+    with_cstr(old, |o| with_cstr(new, |n| syscall!(SYS_LINK, o as usize, n as usize) as isize))
 }
 
 pub fn mkdir(path: &str) -> isize {
-    syscall!(SYS_MKDIR, path.as_ptr() as usize) as isize
+    with_cstr(path, |p| syscall!(SYS_MKDIR, p as usize) as isize)
 }
 
 #[repr(C)]
