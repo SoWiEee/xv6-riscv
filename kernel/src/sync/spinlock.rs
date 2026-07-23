@@ -79,10 +79,33 @@ impl<T> SpinLock<T> {
     }
     
     /// Check if the current CPU holds this lock.
-    /// 
+    ///
     /// Used for debugging assertions.
     pub fn holding(&self) -> bool {
         self.locked.load(Ordering::Relaxed) && unsafe { *self.cpu.get() } == r_tp()
+    }
+
+    /// Raw pointer to the protected data. Only sound to dereference while the
+    /// lock is held. Used by the scheduler, which keeps a proc lock held across
+    /// a context switch (so no live guard exists to deref through).
+    pub fn data_ptr(&self) -> *mut T {
+        self.data.get()
+    }
+
+    /// Release a lock that is held on the current CPU WITHOUT a live guard.
+    ///
+    /// Mirrors `SpinLockGuard::drop` exactly (clear owner, clear flag, `pop_off`).
+    /// This is the counterpart to holding a lock across a context switch via
+    /// `core::mem::forget(guard)`: the frame that acquired the lock is frozen
+    /// during the switch, so the far side of the switch releases it here.
+    ///
+    /// # Safety
+    /// The lock MUST currently be held by this CPU (e.g. acquired with a guard
+    /// that was then `forget`-ten), with the matching `push_off` still in effect.
+    pub unsafe fn raw_release(&self) {
+        unsafe { *self.cpu.get() = 0; }
+        self.locked.store(false, Ordering::Release);
+        pop_off();
     }
 }
 

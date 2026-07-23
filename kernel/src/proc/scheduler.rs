@@ -101,37 +101,43 @@ pub fn free_proc(p: &Proc) {
 pub fn scheduler() -> ! {
     crate::proc::set_scheduler_started();
     crate::arch::console::printk(format_args!("scheduler: started\n"));
-    intr_on();
     loop {
-        let hart = r_tp();
+        // Interrupts stay ON while the scheduler idles looking for work; the
+        // per-proc lock's push_off turns them off around each context switch.
+        intr_on();
         for p in &PROCS {
             let mut inner = p.lock();
             if inner.state == ProcState::Runnable {
-                crate::arch::console::printk(format_args!("scheduler: found runnable pid={}\n", inner.pid));
                 inner.state = ProcState::Running;
-                
+
                 // Set current process for this CPU while holding the lock.
                 let cpu = crate::proc::mycpu();
                 cpu.proc = Some(p);
 
                 // Do NOT touch satp/sstatus/sepc/stvec here. On a process's
-                // first run new.ra = forkret, which calls usertrapret; that is
-                // what programs the return-to-user CSRs and switches to the user
-                // page table (inside the trampoline `userret`). The scheduler
-                // itself runs entirely under the kernel page table.
+                // first run new.ra = forkret, which releases p.lock and calls
+                // usertrapret; that is what programs the return-to-user CSRs and
+                // switches to the user page table (inside `userret`). The
+                // scheduler runs entirely under the kernel page table.
+                //
+                // We keep p.lock HELD across the switch (xv6 discipline): this
+                // guarantees the switch runs with interrupts off, and the far
+                // side (forkret / sched's caller) releases the lock. `forget`
+                // stops the guard's Drop from releasing it here.
                 let ctx_ptr = &mut inner.context as *mut Context;
-                drop(inner);
+                core::mem::forget(inner);
 
-                // Switch into the process. Control returns here when the process
-                // switches back out (via sched()), still on the kernel page table.
                 crate::arch::trap::context_switch(
                     &mut cpu.context,
                     unsafe { &*ctx_ptr },
                     0,
                 );
 
+                // Control returns here after the process switches back out (via
+                // sched), which left p.lock held on our behalf; release it.
                 let cpu = crate::proc::mycpu();
                 cpu.proc = None;
+                unsafe { p.lock.raw_release(); }
             }
         }
     }
@@ -141,26 +147,35 @@ pub fn yield_now() {
     let p = crate::proc::current_process();
     let mut inner = p.lock();
     inner.state = ProcState::Runnable;
-    drop(inner);
+    // Keep p.lock held across the switch (see `sched`); the scheduler releases
+    // it, and re-acquires it before switching back into us, so we release it
+    // here on return. `forget` prevents the guard Drop from releasing early.
+    core::mem::forget(inner);
     sched();
+    unsafe { p.lock.raw_release(); }
 }
 
+/// Switch from the current process back to the scheduler.
+///
+/// MUST be called while holding EXACTLY `p.lock` and nothing else, with the
+/// process already moved out of the `Running` state (Runnable/Sleeping/Zombie).
+/// The lock is intentionally kept held across the switch — this is what keeps
+/// interrupts disabled during `swtch` — and the scheduler releases it on the
+/// other side. We reach the saved-context slot through the held lock's data
+/// pointer since the caller has `forget`-ten its guard.
 pub fn sched() {
     let p = crate::proc::current_process();
-
-    // Snapshot a raw pointer to our saved-context slot, then RELEASE p.lock
-    // before switching away. The context slot lives in the PROCS static (stable
-    // for the life of the process), so the pointer stays valid after the guard
-    // drops. Releasing the lock is essential: the scheduler re-locks every proc
-    // on each pass, so if we held p.lock across the switch its frame would be
-    // frozen with the lock held and the scheduler would deadlock re-locking us.
-    let ctx_ptr = {
-        let mut inner = p.lock();
-        if inner.state == ProcState::Running {
-            panic!("sched: running");
-        }
-        &mut inner.context as *mut Context
-    };
+    if !p.lock.holding() {
+        panic!("sched: not holding p.lock");
+    }
+    if intr_get() {
+        panic!("sched: interrupts enabled");
+    }
+    let inner = unsafe { &mut *p.lock.data_ptr() };
+    if inner.state == ProcState::Running {
+        panic!("sched: running");
+    }
+    let ctx_ptr = &mut inner.context as *mut Context;
     let cpu = crate::proc::mycpu();
     crate::arch::trap::context_switch(unsafe { &mut *ctx_ptr }, &cpu.context, 0);
 }

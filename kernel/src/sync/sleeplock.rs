@@ -37,11 +37,13 @@ impl<T> SleepLock<T> {
                     drop(guard);
                     return SleepLockGuard { lock: self };
                 }
-                // Release the guard lock and sleep on this sleeplock's address
-                drop(guard);
-                // Sleep on this sleeplock's address as the channel
+                // Hand the guard lock to sleep, which atomically releases it as
+                // it puts us to sleep (releasing it ourselves first would open a
+                // lost-wakeup window and double-release inside sleep). `forget`
+                // stops the guard Drop from releasing it here.
+                core::mem::forget(guard);
                 sleep(self as *const _ as usize, &self.guard_lock);
-                // After wakeup, loop will re-acquire the guard lock
+                // sleep returned with guard_lock released; the loop re-acquires.
             }
         } else {
             // Before scheduler starts: spin without sleeping

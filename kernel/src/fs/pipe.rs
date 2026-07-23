@@ -38,11 +38,12 @@ impl Pipe {
         while inner.nread == inner.nwrite && inner.write_open {
             // Buffer empty and writers still exist - sleep
             let chan = self as *const _ as usize;
-            drop(inner); // Release lock before sleep
+            // Hand the lock to sleep, which releases it atomically as we sleep.
+            core::mem::forget(inner);
             sleep(chan, &self.lock);
             inner = self.inner();
         }
-        
+
         if inner.nread == inner.nwrite && !inner.write_open {
             // EOF - no writers
             return 0;
@@ -85,10 +86,11 @@ impl Pipe {
         if n == 0 {
             // Buffer full - sleep
             let chan = self as *const _ as usize;
-            drop(inner);
+            // Hand the lock to sleep, which releases it atomically as we sleep.
+            core::mem::forget(inner);
             sleep(chan, &self.lock);
             inner = self.inner();
-            
+
             // Retry after wakeup
             let available = max_size - (inner.nwrite - inner.nread);
             let n = core::cmp::min(src.len(), available);

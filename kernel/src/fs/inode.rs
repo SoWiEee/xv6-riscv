@@ -508,38 +508,33 @@ pub fn ialloc(dev: u32, typ: InodeType) -> Option<&'static Inode> {
     let sb = read_superblock(dev);
     
     // Search for free inode
+    let off = |inum: u32| (inum as usize % IPB as usize) * core::mem::size_of::<DiskInode>();
     for inum in 1..sb.ninodes {
         let bp = bread(dev, IBLOCK(inum, &sb));
-        {
-            let buf = bp.lock();
-            let data = buf.data();
-            let dip: &DiskInode = unsafe {
-                &*(data.as_ptr().add((inum as usize % IPB as usize) * core::mem::size_of::<DiskInode>()) as *const DiskInode)
-            };
-            if dip.typ == 0 {
-                // Found free inode
-                let mut new_dip = *dip;
-                new_dip.typ = typ as u16;
-                new_dip.nlink = 1;
-                new_dip.size = 0;
-                new_dip.addrs = [0; NDIRECT + 1];
-                
-                // Write back
-                {
-                    let mut buf = bp.lock();
-                    let data = buf.data_mut();
-                    let dip_mut: &mut DiskInode = unsafe {
-                        &mut *(data.as_mut_ptr().add((inum as usize % IPB as usize) * core::mem::size_of::<DiskInode>()) as *mut DiskInode)
-                    };
-                    *dip_mut = new_dip;
-                }
-                bwrite(&bp);
-                brelse(bp);
-                
-                end_op();
-                return Some(iget(dev, inum));
+        // Lock the inode block exactly once. The free check and the write-back
+        // must share a single guard: re-locking `bp` while the first guard is
+        // still held would try to acquire the same (non-reentrant) sleeplock a
+        // second time and deadlock.
+        let mut buf = bp.lock();
+        let dip: DiskInode = unsafe {
+            *(buf.data().as_ptr().add(off(inum)) as *const DiskInode)
+        };
+        if dip.typ == 0 {
+            let mut new_dip = dip;
+            new_dip.typ = typ as u16;
+            new_dip.nlink = 1;
+            new_dip.size = 0;
+            new_dip.addrs = [0; NDIRECT + 1];
+            unsafe {
+                *(buf.data_mut().as_mut_ptr().add(off(inum)) as *mut DiskInode) = new_dip;
             }
+            drop(buf); // release the sleeplock before bwrite/brelse
+            bwrite(&bp);
+            brelse(bp);
+            end_op();
+            return Some(iget(dev, inum));
         }
+        drop(buf);
         brelse(bp);
     }
     

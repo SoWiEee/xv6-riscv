@@ -182,39 +182,57 @@ pub static WAIT_LOCK: SpinLock<()> = SpinLock::new((), "wait_lock");
 /// This matches xv6's sleep(chan, lock) signature.
 /// Note: The caller must hold the lock (have called acquire) but NOT hold a SpinLockGuard.
 /// This function will release the lock, sleep, and re-acquire it.
+/// Atomically release `lock` and sleep on `chan` until a matching `wakeup`.
+///
+/// xv6 discipline: the caller holds `lock` (which MUST NOT be this process's own
+/// `p.lock`, since we lock it internally). We take `p.lock`, release `lock`
+/// while holding it, mark ourselves Sleeping, and `sched()` to the scheduler
+/// with `p.lock` still held — this is what makes the release-and-sleep atomic
+/// against a concurrent `wakeup` (which must take `p.lock` to change our state),
+/// and keeps interrupts disabled across the switch. On return `p.lock` is
+/// released and `lock` is left RELEASED; the caller re-acquires it if it loops.
 pub fn sleep(chan: usize, lock: &SpinLock<impl Sized>) {
     let p = current_process();
-    let mut queues = WAIT_QUEUES.acquire();
-    queues.entry(chan).or_default().push(p as *const Proc as usize);
-    p.set_state(ProcState::Sleeping);
-    p.set_chan(chan);
-    // Release the wait queue lock before releasing the external lock
-    drop(queues);
-    // Release the lock by manually unlocking
-    // SAFETY: The caller guarantees the lock is held but no guard exists
-    unsafe {
-        crate::sync::spinlock::release_raw(&lock.locked);
-    }
+
+    // Acquire p.lock, then release the caller's condition lock. The caller must
+    // hold `lock` with no live guard (it either forgot the guard or holds it
+    // raw) so that this is the single matching release.
+    let mut inner = p.lock();
+    unsafe { crate::sync::spinlock::release_raw(&lock.locked); }
+    inner.chan = chan;
+    inner.state = ProcState::Sleeping;
+
+    // Keep p.lock held across the switch; the scheduler releases it and
+    // re-acquires it before switching back into us.
+    core::mem::forget(inner);
     sched();
-    // Re-acquire the lock
-    lock.acquire();
-    // Remove from wait queue after wakeup
-    let mut queues = WAIT_QUEUES.acquire();
-    if let Some(vec) = queues.get_mut(&chan) {
-        vec.retain(|&ptr| ptr != p as *const Proc as usize);
+
+    // Woken: clear the channel and release p.lock (held by the scheduler on our
+    // behalf across the switch back in).
+    unsafe {
+        (*p.lock.data_ptr()).chan = 0;
+        p.lock.raw_release();
     }
 }
 
-/// Wake up all processes sleeping on a channel.
+/// Wake every process sleeping on `chan`.
+///
+/// Scans the process table (xv6 style), locking each proc except the caller to
+/// flip `Sleeping` -> `Runnable`. Taking each `p.lock` is what synchronises with
+/// `sleep`, which sets `Sleeping` under the same lock.
 pub fn wakeup(chan: usize) {
-    let mut queues = WAIT_QUEUES.acquire();
-    if let Some(vec) = queues.get_mut(&chan) {
-        let ptrs: Vec<usize> = vec.drain(..).collect();
-        for p_ptr in ptrs {
-            let p = unsafe { &*(p_ptr as *const Proc) };
-            if p.state() == ProcState::Sleeping {
-                p.set_state(ProcState::Runnable);
-            }
+    for p in &crate::proc::scheduler::PROCS {
+        // Skip any proc whose lock THIS cpu already holds. wakeup is reachable
+        // from code that legitimately holds a proc lock (e.g. userinit holds
+        // initproc's lock across namei, and a buffer sleeplock release inside
+        // namei calls wakeup) — re-locking it here would self-deadlock. A proc
+        // we hold locked cannot be stably sleeping on `chan` anyway.
+        if p.lock.holding() {
+            continue;
+        }
+        let mut inner = p.lock();
+        if inner.state == ProcState::Sleeping && inner.chan == chan {
+            inner.state = ProcState::Runnable;
         }
     }
 }

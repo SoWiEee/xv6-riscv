@@ -174,31 +174,33 @@ fn sys_fork() -> isize {
 
 pub fn sys_exit(code: i32) -> ! {
     let p = current_process();
-    let mut inner = p.lock();
-    inner.xstate = code;
-    inner.state = ProcState::Zombie;
-    
-    // Close all open files
+
+    // Close all open files. fileclose may block on a sleeplock, so we must NOT
+    // hold p.lock across it: take each fd out under a brief lock, then close.
     for i in 0..16 {
-        if let Some(f) = inner.ofile[i].take() {
+        let f = p.lock().ofile[i].take();
+        if let Some(f) = f {
             fileclose(&f);
         }
     }
-    
-    // Release cwd
-    inner.cwd = None;
-    
-    // Wake up parent
-    if let Some(parent) = inner.parent {
-        let parent = unsafe { &*parent };
-        crate::proc::wakeup(parent as *const Proc as usize);
+
+    // Drop the cwd reference.
+    let _cwd = p.lock().cwd.take();
+
+    // Serialise with wait()/exit() via the global wait_lock, wake our parent,
+    // then mark ourselves Zombie under p.lock. Release wait_lock but keep p.lock
+    // held across the switch to the scheduler (xv6 discipline). Never returns.
+    let wl = crate::proc::WAIT_LOCK.acquire();
+    let parent = unsafe { (*p.lock.data_ptr()).parent };
+    if let Some(parent) = parent {
+        crate::proc::wakeup(parent as usize);
     }
-    
-    // Pass abandoned children to init
-    // For now, just clean up
-    drop(inner);
-    
-    // Schedule and never return
+    let mut inner = p.lock();
+    inner.xstate = code;
+    inner.state = ProcState::Zombie;
+    drop(wl);
+    core::mem::forget(inner);
+
     crate::proc::sched();
     panic!("sys_exit: should not return");
 }
@@ -678,9 +680,16 @@ fn sys_sbrk(n: usize) -> isize {
 }
 
 fn sys_sleep(ticks: usize) -> isize {
-    let p = current_process();
-    let wait_chan = ticks;
-    crate::proc::sleep(wait_chan, &p.lock);
+    // Yield until `ticks` timer ticks have elapsed. (A wakeup(&ticks) mechanism
+    // would be more efficient, but there is no tick wait channel yet, and
+    // yielding avoids sleeping on p.lock — which `sleep` locks internally.)
+    let start = crate::proc::ticks();
+    while crate::proc::ticks().wrapping_sub(start) < ticks {
+        if crate::proc::is_killed(current_process()) {
+            return -1;
+        }
+        crate::proc::yield_now();
+    }
     0
 }
 

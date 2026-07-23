@@ -198,6 +198,9 @@ pub fn usertrapret(p: &'static crate::proc::process::Proc) -> ! {
 #[unsafe(no_mangle)]
 pub extern "C" fn forkret() -> ! {
     let p = crate::proc::current_process();
+    // The scheduler switched into us while holding p.lock (xv6 discipline). We
+    // are the far side of that switch, so we must release it before running.
+    unsafe { p.lock.raw_release(); }
     usertrapret(p)
 }
 
