@@ -185,14 +185,27 @@ pub fn fileclose(f: &File) {
     }
     
     let mut inner = f.inner();
-    match inner.typ {
+    let typ = inner.typ;
+    let readable = inner.readable;
+    let writable = inner.writable;
+    let pipe = inner.pipe.take();
+    let inode = inner.inode.take();
+    drop(inner);
+    
+    match typ {
         FileType::Pipe => {
-            if let Some(pipe) = inner.pipe.take() {
-                // Pipe close logic handled by pipe itself
+            if let Some(pipe) = pipe {
+                if readable && !writable {
+                    // Read end closed
+                    pipe.read_close();
+                } else if writable && !readable {
+                    // Write end closed
+                    pipe.write_close();
+                }
             }
         }
         FileType::Inode => {
-            if let Some(inode) = inner.inode.take() {
+            if let Some(inode) = inode {
                 crate::fs::iput(inode);
             }
         }
