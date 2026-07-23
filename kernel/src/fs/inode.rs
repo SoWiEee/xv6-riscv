@@ -10,6 +10,7 @@ use crate::fs::buf::{bread, brelse, bwrite, BSIZE};
 use crate::fs::log::{begin_op, end_op, SuperBlock};
 use alloc::vec::Vec;
 use core::str;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// Number of direct block pointers in an inode.
 pub const NDIRECT: usize = 12;
@@ -90,7 +91,7 @@ pub struct Inode {
     spinlock: SpinLock<InodeInner>,
     dev: u32,
     inum: u32,
-    refcnt: usize,
+    refcnt: AtomicUsize,
 }
 
 /// Mutable inode metadata protected by `spinlock`.
@@ -118,7 +119,7 @@ impl Inode {
             }, "inode_inner"),
             dev,
             inum,
-            refcnt: 0,
+            refcnt: AtomicUsize::new(0),
         }
     }
     
@@ -139,7 +140,7 @@ impl Inode {
     pub fn inum(&self) -> u32 { self.inum }
     
     /// Get the reference count.
-    pub fn refcnt(&self) -> usize { self.refcnt }
+    pub fn refcnt(&self) -> usize { self.refcnt.load(Ordering::Acquire) }
     
     /// Acquire the spinlock for metadata access.
     pub fn inner(&self) -> SpinLockGuard<InodeInner> {
@@ -378,11 +379,7 @@ fn iget_locked(dev: u32, inum: u32) -> &'static Inode {
         if let Some(inode) = &cache.inodes[i] {
             let inner = inode.inner();
             if inner.typ != InodeType::None && inode.dev == dev && inode.inum == inum {
-                // Need to modify refcnt - use interior mutability or unsafe
-                unsafe {
-                    let inode_ptr = inode as *const Inode as *mut Inode;
-                    (*inode_ptr).refcnt += 1;
-                }
+                inode.refcnt.fetch_add(1, Ordering::AcqRel);
                 return unsafe { &*(inode as *const Inode) };
             }
         }
@@ -397,7 +394,7 @@ fn iget_locked(dev: u32, inum: u32) -> &'static Inode {
                     let inode_ptr = inode as *const Inode as *mut Inode;
                     (*inode_ptr).dev = dev;
                     (*inode_ptr).inum = inum;
-                    (*inode_ptr).refcnt = 1;
+                    (*inode_ptr).refcnt.store(1, Ordering::Release);
                     (*inode_ptr).inner().typ = InodeType::None; // Will be loaded from disk
                 }
                 return unsafe { &*(inode as *const Inode) };
@@ -444,27 +441,40 @@ pub fn iput(ip: &Inode) {
     let mut cache = ICACHE.acquire();
     
     // Find and decrement refcnt
+    let mut should_truncate = false;
+    
     for i in 0..NINODE {
         if let Some(inode) = &cache.inodes[i] {
             if core::ptr::eq(inode, ip) {
-                unsafe {
-                    let inode_ptr = inode as *const Inode as *mut Inode;
-                    (*inode_ptr).refcnt -= 1;
-                    if (*inode_ptr).refcnt == 0 {
-                        let inner = (*inode_ptr).inner();
-                        if inner.nlink == 0 {
-                            // Truncate and free inode
-                            drop(cache);
-                            ip.truncate();
-                            let mut cache = ICACHE.acquire();
-                            let mut inner = (*inode_ptr).inner();
-                            inner.typ = InodeType::None;
-                            inner.size = 0;
-                            inner.addrs = [0; NDIRECT + 1];
-                        }
+                let prev = inode.refcnt.fetch_sub(1, Ordering::AcqRel);
+                if prev == 1 {
+                    // refcnt was 1, now 0
+                    let inner = inode.inner();
+                    if inner.nlink == 0 {
+                        should_truncate = true;
                     }
                 }
                 break;
+            }
+        }
+    }
+    drop(cache);
+    
+    if should_truncate {
+        ip.truncate();
+        let mut cache = ICACHE.acquire();
+        for i in 0..NINODE {
+            if let Some(inode) = &cache.inodes[i] {
+                if core::ptr::eq(inode, ip) {
+                    unsafe {
+                        let inode_ptr = inode as *const Inode as *mut Inode;
+                        let mut inner = (*inode_ptr).inner();
+                        inner.typ = InodeType::None;
+                        inner.size = 0;
+                        inner.addrs = [0; NDIRECT + 1];
+                    }
+                    break;
+                }
             }
         }
     }
