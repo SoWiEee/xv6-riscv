@@ -7,6 +7,7 @@
 use crate::arch::asm::VIRTIO0;
 use crate::arch::interrupt::plic_init_hart;
 use crate::mm::frame_allocator::alloc_page;
+use crate::sync::mutex::Mutex;
 use core::sync::atomic::{AtomicU16, Ordering};
 
 const VIRTIO_MMIO_MAGIC_VALUE: usize = 0x00;
@@ -27,6 +28,8 @@ const VIRTIO_MMIO_QUEUE_AVAIL_HIGH: usize = 0x94;
 const VIRTIO_MMIO_QUEUE_USED_LOW: usize = 0xA0;
 const VIRTIO_MMIO_QUEUE_USED_HIGH: usize = 0xA4;
 const VIRTIO_MMIO_STATUS: usize = 0x70;
+const VIRTIO_MMIO_QUEUE_NOTIFY: usize = 0x50;
+const VIRTIO_MMIO_INTERRUPT_ACK: usize = 0x60;
 
 const VIRTIO_BLK_T_IN: u32 = 0;
 const VIRTIO_BLK_T_OUT: u32 = 1;
@@ -38,6 +41,8 @@ const VIRTIO_STATUS_ACKNOWLEDGE: u32 = 1;
 const VIRTIO_STATUS_DRIVER: u32 = 2;
 const VIRTIO_STATUS_DRIVER_OK: u32 = 4;
 const VIRTIO_STATUS_FEATURES_OK: u32 = 8;
+
+const QUEUE_SIZE: usize = 8;
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -52,7 +57,7 @@ struct VirtqDesc {
 struct VirtqAvail {
     flags: u16,
     idx: u16,
-    ring: [u16; 8],
+    ring: [u16; QUEUE_SIZE],
 }
 
 #[repr(C)]
@@ -66,13 +71,8 @@ struct VirtqUsedElem {
 struct VirtqUsed {
     flags: u16,
     idx: u16,
-    ring: [VirtqUsedElem; 8],
+    ring: [VirtqUsedElem; QUEUE_SIZE],
 }
-
-static mut DESC: [VirtqDesc; 8] = [VirtqDesc { addr: 0, len: 0, flags: 0, next: 0 }; 8];
-static mut AVAIL: VirtqAvail = VirtqAvail { flags: 0, idx: 0, ring: [0; 8] };
-static mut USED: VirtqUsed = VirtqUsed { flags: 0, idx: 0, ring: [VirtqUsedElem { id: 0, len: 0 }; 8] };
-static FREE_DESC: AtomicU16 = AtomicU16::new(0);
 
 const VIRTQ_DESC_F_NEXT: u16 = 1;
 const VIRTQ_DESC_F_WRITE: u16 = 2;
@@ -85,8 +85,47 @@ struct VirtioBlkReq {
     sector: u64,
 }
 
-static mut REQ: VirtioBlkReq = VirtioBlkReq { type_: 0, reserved: 0, sector: 0 };
-static mut STATUS: u8 = 0;
+/// Virtio block device state.
+/// 
+/// Contains all ring buffers and synchronization primitives needed
+/// for virtio operations. Protected by a mutex for concurrent access.
+struct VirtioDevice {
+    desc: [VirtqDesc; QUEUE_SIZE],
+    avail: VirtqAvail,
+    used: VirtqUsed,
+    free_desc: AtomicU16,
+    req: VirtioBlkReq,
+    status: u8,
+    // Physical addresses of the allocated pages
+    _desc_page: usize,
+    _avail_page: usize,
+    _used_page: usize,
+}
+
+impl VirtioDevice {
+    fn new(
+        desc_page: usize,
+        avail_page: usize,
+        used_page: usize,
+    ) -> Self {
+        Self {
+            desc: [VirtqDesc { addr: 0, len: 0, flags: 0, next: 0 }; QUEUE_SIZE],
+            avail: VirtqAvail { flags: 0, idx: 0, ring: [0; QUEUE_SIZE] },
+            used: VirtqUsed { flags: 0, idx: 0, ring: [VirtqUsedElem { id: 0, len: 0 }; QUEUE_SIZE] },
+            free_desc: AtomicU16::new(0),
+            req: VirtioBlkReq { type_: 0, reserved: 0, sector: 0 },
+            status: 0,
+            _desc_page: desc_page,
+            _avail_page: avail_page,
+            _used_page: used_page,
+        }
+    }
+}
+
+/// Global virtio device instance.
+/// 
+/// Initialized by `virtio_init()` and accessed via `VIRTIO_DEVICE.lock()`.
+static VIRTIO_DEVICE: Mutex<Option<VirtioDevice>> = Mutex::new(None);
 
 /// Initialize the virtio block device.
 /// 
@@ -125,6 +164,7 @@ pub fn virtio_init() {
         let avail_page = alloc_page().expect("virtio avail");
         let used_page = alloc_page().expect("virtio used");
         
+        // Store physical addresses in device registers
         v.add(VIRTIO_MMIO_QUEUE_DESC_LOW / 4).write_volatile((desc_page.0 << 12) as u32);
         v.add(VIRTIO_MMIO_QUEUE_DESC_HIGH / 4).write_volatile((desc_page.0 >> 20) as u32);
         v.add(VIRTIO_MMIO_QUEUE_AVAIL_LOW / 4).write_volatile((avail_page.0 << 12) as u32);
@@ -134,6 +174,10 @@ pub fn virtio_init() {
         
         v.add(VIRTIO_MMIO_QUEUE_READY / 4).write_volatile(1);
         v.add(VIRTIO_MMIO_STATUS / 4).write_volatile(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK | VIRTIO_STATUS_DRIVER_OK);
+        
+        // Initialize device state
+        let device = VirtioDevice::new(desc_page.0 << 12, avail_page.0 << 12, used_page.0 << 12);
+        *VIRTIO_DEVICE.lock() = Some(device);
         
         // Enable interrupt
         plic_init_hart();
@@ -156,61 +200,78 @@ pub struct Block {
 /// 
 /// Blocks until the operation completes.
 pub fn virtio_rw(block: &mut Block, write: bool) {
-    unsafe {
-        // Wait for free descriptor
-        while FREE_DESC.load(Ordering::Acquire) >= 8 {
-            core::hint::spin_loop();
+    // Wait for free descriptor
+    let idx = loop {
+        let mut device_guard = VIRTIO_DEVICE.lock();
+        let device = device_guard.as_mut().expect("virtio not initialized");
+        
+        if device.free_desc.load(Ordering::Acquire) < QUEUE_SIZE as u16 {
+            break device.free_desc.fetch_add(1, Ordering::AcqRel) as usize;
         }
+        drop(device_guard);
+        core::hint::spin_loop();
+    };
+    
+    let sector = block.blockno;
+    
+    {
+        let mut device_guard = VIRTIO_DEVICE.lock();
+        let mut device = device_guard.as_mut().expect("virtio not initialized");
         
-        let idx = FREE_DESC.fetch_add(1, Ordering::AcqRel) as usize;
+        device.req.type_ = if write { VIRTIO_BLK_T_OUT } else { VIRTIO_BLK_T_IN };
+        device.req.reserved = 0;
+        device.req.sector = sector;
         
-        let sector = block.blockno;
-        
-        REQ.type_ = if write { VIRTIO_BLK_T_OUT } else { VIRTIO_BLK_T_IN };
-        REQ.reserved = 0;
-        REQ.sector = sector;
-        
-        let req_paddr = &raw const REQ as usize;
+        let req_paddr = &raw const device.req as usize;
         let buf_paddr = block.data.as_ptr() as usize;
-        let status_paddr = &raw mut STATUS as usize;
+        let status_paddr = &raw mut device.status as usize;
         
         // Desc 0: request header (readable by device)
-        DESC[idx].addr = req_paddr as u64;
-        DESC[idx].len = core::mem::size_of::<VirtioBlkReq>() as u32;
-        DESC[idx].flags = VIRTQ_DESC_F_NEXT;
-        DESC[idx].next = ((idx + 1) % 8) as u16;
+        device.desc[idx].addr = req_paddr as u64;
+        device.desc[idx].len = core::mem::size_of::<VirtioBlkReq>() as u32;
+        device.desc[idx].flags = VIRTQ_DESC_F_NEXT;
+        device.desc[idx].next = ((idx + 1) % QUEUE_SIZE) as u16;
         
         // Desc 1: data buffer (writable by device for read, readable for write)
-        DESC[(idx + 1) % 8].addr = buf_paddr as u64;
-        DESC[(idx + 1) % 8].len = 512;
-        DESC[(idx + 1) % 8].flags = if write { 0 } else { VIRTQ_DESC_F_WRITE } | VIRTQ_DESC_F_NEXT;
-        DESC[(idx + 1) % 8].next = ((idx + 2) % 8) as u16;
+        device.desc[(idx + 1) % QUEUE_SIZE].addr = buf_paddr as u64;
+        device.desc[(idx + 1) % QUEUE_SIZE].len = 512;
+        device.desc[(idx + 1) % QUEUE_SIZE].flags = if write { 0 } else { VIRTQ_DESC_F_WRITE } | VIRTQ_DESC_F_NEXT;
+        device.desc[(idx + 1) % QUEUE_SIZE].next = ((idx + 2) % QUEUE_SIZE) as u16;
         
         // Desc 2: status (writable by device)
-        DESC[(idx + 2) % 8].addr = status_paddr as u64;
-        DESC[(idx + 2) % 8].len = 1;
-        DESC[(idx + 2) % 8].flags = VIRTQ_DESC_F_WRITE;
-        DESC[(idx + 2) % 8].next = 0;
+        device.desc[(idx + 2) % QUEUE_SIZE].addr = status_paddr as u64;
+        device.desc[(idx + 2) % QUEUE_SIZE].len = 1;
+        device.desc[(idx + 2) % QUEUE_SIZE].flags = VIRTQ_DESC_F_WRITE;
+        device.desc[(idx + 2) % QUEUE_SIZE].next = 0;
         
         // Add to avail ring
-        let avail_idx = AVAIL.idx as usize % 8;
-        AVAIL.ring[avail_idx] = idx as u16;
+        let avail_idx = device.avail.idx as usize % QUEUE_SIZE;
+        device.avail.ring[avail_idx] = idx as u16;
         core::sync::atomic::fence(Ordering::SeqCst);
-        AVAIL.idx = AVAIL.idx.wrapping_add(1);
+        device.avail.idx = device.avail.idx.wrapping_add(1);
         
         // Notify device
-        let v = VIRTIO0 as *mut u32;
-        v.add(0x50 / 4).write_volatile(0); // Queue notify
-        
-        // Wait for completion (interrupt will set status)
-        while unsafe { core::ptr::read_volatile(&raw const STATUS) } == 0 {
-            core::hint::spin_loop();
+        unsafe {
+            let v = VIRTIO0 as *mut u32;
+            v.add(VIRTIO_MMIO_QUEUE_NOTIFY / 4).write_volatile(0);
         }
         
-        assert_eq!(unsafe { core::ptr::read_volatile(&raw const STATUS) }, VIRTIO_BLK_S_OK);
-        unsafe { core::ptr::write_volatile(&raw mut STATUS, 0); }
+        // Wait for completion (interrupt will set status)
+        loop {
+            let status = unsafe { core::ptr::read_volatile(&raw const device.status) };
+            if status != 0 {
+                break;
+            }
+            drop(device_guard);
+            core::hint::spin_loop();
+            device_guard = VIRTIO_DEVICE.lock();
+            device = device_guard.as_mut().expect("virtio not initialized");
+        }
         
-        FREE_DESC.fetch_sub(1, Ordering::AcqRel);
+        assert_eq!(unsafe { core::ptr::read_volatile(&raw const device.status) }, VIRTIO_BLK_S_OK);
+        unsafe { core::ptr::write_volatile(&raw mut device.status, 0); }
+        
+        device.free_desc.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -221,14 +282,17 @@ pub fn virtio_intr() {
     unsafe {
         let v = VIRTIO0 as *mut u32;
         // Acknowledge interrupt
-        v.add(0x60 / 4).write_volatile(1); // Interrupt acknowledge
-        
-        // Process used ring
-        while USED.idx != AVAIL.idx {
-            let used_idx = USED.idx as usize % 8;
-            let _elem = USED.ring[used_idx];
-            USED.idx = USED.idx.wrapping_add(1);
-            // Status is already in STATUS variable
-        }
+        v.add(VIRTIO_MMIO_INTERRUPT_ACK / 4).write_volatile(1);
+    }
+    
+    let mut device_guard = VIRTIO_DEVICE.lock();
+    let device = device_guard.as_mut().expect("virtio not initialized");
+    
+    // Process used ring
+    while device.used.idx != device.avail.idx {
+        let used_idx = device.used.idx as usize % QUEUE_SIZE;
+        let _elem = device.used.ring[used_idx];
+        device.used.idx = device.used.idx.wrapping_add(1);
+        // Status is already in device.status variable
     }
 }
