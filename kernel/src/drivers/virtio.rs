@@ -237,117 +237,73 @@ pub struct Block {
 /// 
 /// Blocks until the operation completes.
 pub fn virtio_rw(block: &mut Block, write: bool) {
-    crate::arch::console::printk(format_args!("virtio_rw: block={} write={}\n", block.blockno, write));
-    // Wait for free descriptor
-    let idx = loop {
-        let mut device_guard = VIRTIO_DEVICE.lock();
-        let device = device_guard.as_mut().expect("virtio not initialized");
-        
-        if device.free_desc.load(Ordering::Acquire) < QUEUE_SIZE as u16 {
-            break device.free_desc.fetch_add(1, Ordering::AcqRel) as usize;
-        }
-        drop(device_guard);
-        core::hint::spin_loop();
-    };
-    
-    crate::arch::console::printk(format_args!("virtio_rw: got desc idx={}\n", idx));
-    // Wait for free descriptor
-    let idx = loop {
-        let mut device_guard = VIRTIO_DEVICE.lock();
-        let device = device_guard.as_mut().expect("virtio not initialized");
-        
-        if device.free_desc.load(Ordering::Acquire) < QUEUE_SIZE as u16 {
-            break device.free_desc.fetch_add(1, Ordering::AcqRel) as usize;
-        }
-        drop(device_guard);
-        core::hint::spin_loop();
-    };
-    
     let sector = block.blockno;
-    
-    {
-        let mut device_guard = VIRTIO_DEVICE.lock();
-        let mut device = device_guard.as_mut().expect("virtio not initialized");
-        
-        device.req.type_ = if write { VIRTIO_BLK_T_OUT } else { VIRTIO_BLK_T_IN };
-        device.req.reserved = 0;
-        device.req.sector = sector;
-        
-        let req_paddr = &raw const device.req as usize;
-        let buf_paddr = block.data.as_ptr() as usize;
-        let status_paddr = &raw mut device.status as usize;
-        
-        // Desc 0: request header (readable by device)
-        device.desc[idx].addr = req_paddr as u64;
-        device.desc[idx].len = core::mem::size_of::<VirtioBlkReq>() as u32;
-        device.desc[idx].flags = VIRTQ_DESC_F_NEXT;
-        device.desc[idx].next = ((idx + 1) % QUEUE_SIZE) as u16;
-        
-        // Desc 1: data buffer (writable by device for read, readable for write)
-        device.desc[(idx + 1) % QUEUE_SIZE].addr = buf_paddr as u64;
-        device.desc[(idx + 1) % QUEUE_SIZE].len = 512;
-        device.desc[(idx + 1) % QUEUE_SIZE].flags = if write { 0 } else { VIRTQ_DESC_F_WRITE } | VIRTQ_DESC_F_NEXT;
-        device.desc[(idx + 1) % QUEUE_SIZE].next = ((idx + 2) % QUEUE_SIZE) as u16;
-        
-        // Desc 2: status (writable by device)
-        device.desc[(idx + 2) % QUEUE_SIZE].addr = status_paddr as u64;
-        device.desc[(idx + 2) % QUEUE_SIZE].len = 1;
-        device.desc[(idx + 2) % QUEUE_SIZE].flags = VIRTQ_DESC_F_WRITE;
-        device.desc[(idx + 2) % QUEUE_SIZE].next = 0;
-        
-        // Add to avail ring
-        let avail_idx = device.avail.idx as usize % QUEUE_SIZE;
-        device.avail.ring[avail_idx] = idx as u16;
+
+    // Hold the device lock for the whole operation: this serialises requests so
+    // only one is ever outstanding, which lets us use a fixed 3-descriptor chain
+    // (0 -> 1 -> 2) and a simple polled completion.
+    let mut device_guard = VIRTIO_DEVICE.lock();
+    let device = device_guard.as_mut().expect("virtio not initialized");
+
+    // CRITICAL: the descriptor table, avail ring and used ring the DEVICE reads
+    // and writes live in the physical pages we programmed into the queue
+    // registers at init (QUEUE_DESC/AVAIL/USED). They are NOT the arrays that
+    // happen to sit inside `VirtioDevice`. The kernel identity-maps physical
+    // memory, so the stored page addresses are usable directly as pointers.
+    let desc = device._desc_page as *mut VirtqDesc;
+    let avail = device._avail_page as *mut VirtqAvail;
+    let used = device._used_page as *const VirtqUsed;
+
+    // Request header and status live in kernel .bss (inside the device struct),
+    // which is identity-mapped, so the device can DMA to their addresses.
+    device.req.type_ = if write { VIRTIO_BLK_T_OUT } else { VIRTIO_BLK_T_IN };
+    device.req.reserved = 0;
+    device.req.sector = sector;
+    device.status = 0xff; // sentinel; device overwrites with 0 (OK) on success
+
+    let req_pa = &raw const device.req as u64;
+    let buf_pa = block.data.as_ptr() as u64;
+    let status_pa = &raw mut device.status as u64;
+
+    unsafe {
+        // desc[0]: request header, device-readable, chains to data.
+        (*desc.add(0)).addr = req_pa;
+        (*desc.add(0)).len = core::mem::size_of::<VirtioBlkReq>() as u32;
+        (*desc.add(0)).flags = VIRTQ_DESC_F_NEXT;
+        (*desc.add(0)).next = 1;
+
+        // desc[1]: 512-byte data buffer. Device-WRITABLE on read, device-readable
+        // on write. Chains to status.
+        (*desc.add(1)).addr = buf_pa;
+        (*desc.add(1)).len = 512;
+        (*desc.add(1)).flags = VIRTQ_DESC_F_NEXT | if write { 0 } else { VIRTQ_DESC_F_WRITE };
+        (*desc.add(1)).next = 2;
+
+        // desc[2]: 1-byte status, device-writable, end of chain.
+        (*desc.add(2)).addr = status_pa;
+        (*desc.add(2)).len = 1;
+        (*desc.add(2)).flags = VIRTQ_DESC_F_WRITE;
+        (*desc.add(2)).next = 0;
+
+        // Publish the chain head (descriptor 0) in the avail ring, then bump idx.
+        let first_used = core::ptr::read_volatile(&(*used).idx);
+        let ai = (*avail).idx;
+        (*avail).ring[(ai as usize) % QUEUE_SIZE] = 0;
         core::sync::atomic::fence(Ordering::SeqCst);
-        device.avail.idx = device.avail.idx.wrapping_add(1);
-        
-        // Notify device
-        unsafe {
-            let v = VIRTIO0 as *mut u32;
-            v.add(VIRTIO_MMIO_QUEUE_NOTIFY / 4).write_volatile(0);
-        }
-        
-        // Wait for completion (poll used ring)
-        let mut wait_count = 0;
-        loop {
-            // Check if device has processed the request by checking used ring
-            let used_idx_val = device.used.idx;
-            let avail_idx_val = device.avail.idx;
-            if used_idx_val != avail_idx_val {
-                crate::arch::console::printk(format_args!("virtio_rw: used_idx={} avail_idx={} after {} loops\n", used_idx_val, avail_idx_val, wait_count));
-                // Process the completed request
-                let used_idx = used_idx_val as usize % QUEUE_SIZE;
-                let _elem = device.used.ring[used_idx];
-                device.used.idx = used_idx_val.wrapping_add(1);
-                // Read status from device-written memory location
-                let status = unsafe { core::ptr::read_volatile(&raw const device.status) };
-                crate::arch::console::printk(format_args!("virtio_rw: read status={}\n", status));
-                unsafe { core::ptr::write_volatile(&raw mut device.status, status); }
-                // virtio blk: status 0 = OK, non-zero = error
-                break;
-            }
-            // Save values needed after dropping guard
-            let _used_idx_val = used_idx_val;
-            let _avail_idx_val = avail_idx_val;
-            drop(device_guard);
+        (*avail).idx = ai.wrapping_add(1);
+        core::sync::atomic::fence(Ordering::SeqCst);
+
+        // Notify the device (queue 0).
+        let v = VIRTIO0 as *mut u32;
+        v.add(VIRTIO_MMIO_QUEUE_NOTIFY / 4).write_volatile(0);
+
+        // Poll until the device advances the used ring past where it was.
+        while core::ptr::read_volatile(&(*used).idx) == first_used {
             core::hint::spin_loop();
-            wait_count += 1;
-            if wait_count % 1000000 == 0 {
-                // Need to re-acquire to read status
-                let mut tmp_guard = VIRTIO_DEVICE.lock();
-                let tmp_device = tmp_guard.as_mut().expect("virtio not initialized");
-                let current_status = unsafe { core::ptr::read_volatile(&raw const tmp_device.status) };
-                crate::arch::console::printk(format_args!("virtio_rw: waiting... used_idx={} avail_idx={} status={}\n", _used_idx_val, _avail_idx_val, current_status));
-                drop(tmp_guard);
-            }
-            device_guard = VIRTIO_DEVICE.lock();
-            device = device_guard.as_mut().expect("virtio not initialized");
         }
-        
-        assert_eq!(unsafe { core::ptr::read_volatile(&raw const device.status) }, VIRTIO_BLK_S_OK);
-        unsafe { core::ptr::write_volatile(&raw mut device.status, 0); }
-        
-        device.free_desc.fetch_sub(1, Ordering::AcqRel);
+
+        let st = core::ptr::read_volatile(&raw const device.status);
+        assert_eq!(st, VIRTIO_BLK_S_OK, "virtio_rw: device reported error status");
     }
 }
 

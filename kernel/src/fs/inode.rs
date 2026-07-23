@@ -438,7 +438,8 @@ pub fn iget(dev: u32, inum: u32) -> &'static Inode {
     
     if needs_load {
         let sb = read_superblock(dev);
-        let bp = bread(dev, IBLOCK(inum, &sb));
+        let iblock = IBLOCK(inum, &sb);
+        let bp = bread(dev, iblock);
         {
             let buf = bp.lock();
             let data = buf.data();
@@ -676,17 +677,17 @@ pub fn dirlookup_locked(dp: &Inode, name: &str) -> Option<&'static Inode> {
     if dp.typ() != InodeType::Dir {
         return None;
     }
-    
+
     let entry_size = core::mem::size_of::<Dirent>();
     let mut offset = 0;
-    
+
     while offset < dp.size() as usize {
         let mut de = Dirent::new();
         let n = dp.read(&mut de.as_bytes_mut()[..entry_size], offset, entry_size);
         if n != entry_size {
             break;
         }
-        
+
         if de.inum != 0 {
             let entry_name = str::from_utf8(&de.name).ok()?.trim_end_matches('\0');
             if entry_name == name {
@@ -695,7 +696,7 @@ pub fn dirlookup_locked(dp: &Inode, name: &str) -> Option<&'static Inode> {
         }
         offset += entry_size;
     }
-    
+
     None
 }
 
