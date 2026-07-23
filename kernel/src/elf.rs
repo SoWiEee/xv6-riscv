@@ -9,6 +9,9 @@ use alloc::vec::Vec;
 use alloc::string::String;
 use core::mem;
 
+/// Embedded init binary (user/_init)
+pub const INIT_BINARY: &[u8] = include_bytes!("../../user/_init");
+
 /// ELF identification constants
 const ELFMAG0: u8 = 0x7f;
 const ELFMAG1: u8 = b'E';
@@ -355,4 +358,155 @@ pub fn setup_user_stack(pt: &mut PageTable, args: &[String], sp: usize) -> Resul
     stack_ptr &= !(16 - 1);
     
     Ok((stack_ptr, argv_ptr))
+}
+
+/// Load ELF executable from embedded binary data.
+pub fn load_elf_from_bytes(data: &[u8], pt: &mut PageTable) -> Result<usize, &'static str> {
+    use crate::mm::address::VirtAddr;
+    use crate::arch::paging::{PAGE_SIZE, PTE_R, PTE_W, PTE_X, PTE_U, PTE_V};
+    use alloc::vec::Vec;
+    use core::mem;
+    
+    // Read ELF header
+    let mut ehdr = Elf64Ehdr {
+        e_ident: [0; 16],
+        e_type: 0,
+        e_machine: 0,
+        e_version: 0,
+        e_entry: 0,
+        e_phoff: 0,
+        e_shoff: 0,
+        e_flags: 0,
+        e_ehsize: 0,
+        e_phentsize: 0,
+        e_phnum: 0,
+        e_shentsize: 0,
+        e_shnum: 0,
+        e_shstrndx: 0,
+    };
+    
+    if data.len() < mem::size_of::<Elf64Ehdr>() {
+        return Err("ELF binary too small for header");
+    }
+    let ehdr_bytes = &data[..mem::size_of::<Elf64Ehdr>()];
+    unsafe {
+        core::ptr::copy_nonoverlapping(ehdr_bytes.as_ptr(), &mut ehdr as *mut Elf64Ehdr as *mut u8, mem::size_of::<Elf64Ehdr>());
+    }
+    
+    // Verify ELF header
+    ehdr.check()?;
+    
+    // Read program headers
+    let phdr_size = mem::size_of::<Elf64Phdr>();
+    let phdr_count = ehdr.e_phnum as usize;
+    let phdr_offset = ehdr.e_phoff as usize;
+    
+    let mut phdrs = Vec::with_capacity(phdr_count);
+    
+    for i in 0..phdr_count {
+        let mut phdr = Elf64Phdr {
+            p_type: 0,
+            p_flags: 0,
+            p_offset: 0,
+            p_vaddr: 0,
+            p_paddr: 0,
+            p_filesz: 0,
+            p_memsz: 0,
+            p_align: 0,
+        };
+        
+        let offset = phdr_offset + i * phdr_size;
+        if data.len() < offset + phdr_size {
+            return Err("ELF binary too small for program headers");
+        }
+        let phdr_bytes = &data[offset..offset + phdr_size];
+        unsafe {
+            core::ptr::copy_nonoverlapping(phdr_bytes.as_ptr(), &mut phdr as *mut Elf64Phdr as *mut u8, phdr_size);
+        }
+        
+        phdrs.push(phdr);
+    }
+    
+    // Process PT_LOAD segments
+    let mut max_addr = 0usize;
+    
+    for phdr in &phdrs {
+        if phdr.p_type != PT_LOAD {
+            continue;
+        }
+        
+        let vaddr = phdr.p_vaddr as usize;
+        let filesz = phdr.p_filesz as usize;
+        let memsz = phdr.p_memsz as usize;
+        let offset = phdr.p_offset as usize;
+        // Check alignment
+        if phdr.p_align > 0 && (vaddr % phdr.p_align as usize) != 0 {
+            return Err("Segment alignment mismatch");
+        }
+        
+        // Allocate pages for this segment
+        let start_page = vaddr & !(PAGE_SIZE - 1);
+        let end_page = ((vaddr + memsz + PAGE_SIZE - 1) & !(PAGE_SIZE - 1));
+        
+        for page_addr in (start_page..end_page).step_by(PAGE_SIZE) {
+            let page = crate::mm::frame_allocator::kalloc().ok_or("Failed to allocate page")?;
+            pt.map(VirtAddr(page_addr), page.to_paddr(), PTE_R | PTE_W | PTE_U | PTE_X)?;
+        }
+        
+        // Copy segment data from ELF binary
+        if data.len() < offset + filesz {
+            return Err("ELF binary too small for segment data");
+        }
+        let seg_data = &data[offset..offset + filesz];
+        copy_to_user(pt, vaddr, seg_data)?;
+        
+        // Zero out the rest of the memory (bss)
+        if memsz > filesz {
+            let bss_start = vaddr + filesz;
+            let bss_size = memsz - filesz;
+            zero_user(pt, bss_start, bss_size)?;
+        }
+        
+        if vaddr + memsz > max_addr {
+            max_addr = vaddr + memsz;
+        }
+    }
+    
+    Ok(ehdr.e_entry as usize)
+}
+
+/// Copy data from kernel buffer to user virtual address.
+fn copy_to_user(pt: &mut PageTable, vaddr: usize, src: &[u8]) -> Result<(), &'static str> {
+    let mut copied = 0;
+    while copied < src.len() {
+        let pa = match pt.translate(VirtAddr(vaddr + copied)) {
+            Some(pa) => pa,
+            None => return Err("Failed to translate user address"),
+        };
+        let page_end = ((vaddr + copied) | (PAGE_SIZE - 1)) + 1;
+        let chunk_end = core::cmp::min(page_end, vaddr + src.len());
+        let chunk_size = chunk_end - (vaddr + copied);
+        let dst = unsafe { core::slice::from_raw_parts_mut(pa.0 as *mut u8, chunk_size) };
+        dst.copy_from_slice(&src[copied..copied + chunk_size]);
+        copied += chunk_size;
+    }
+    Ok(())
+}
+
+/// Zero out user memory region.
+fn zero_user(pt: &mut PageTable, vaddr: usize, size: usize) -> Result<(), &'static str> {
+    let mut zeroed = 0;
+    while zeroed < size {
+        let pa = match pt.translate(VirtAddr(vaddr + zeroed)) {
+            Some(pa) => pa,
+            None => return Err("Failed to translate user address"),
+        };
+        let page_end = ((vaddr + zeroed) | (PAGE_SIZE - 1)) + 1;
+        let chunk_end = core::cmp::min(page_end, vaddr + size);
+        let chunk_size = chunk_end - (vaddr + zeroed);
+        let dst = unsafe { core::slice::from_raw_parts_mut(pa.0 as *mut u8, chunk_size) };
+        dst.fill(0);
+        zeroed += chunk_size;
+    }
+    Ok(())
 }

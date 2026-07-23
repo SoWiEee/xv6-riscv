@@ -21,7 +21,7 @@ struct BufData {
     dev: u32,
     refcnt: usize,
     valid: bool,
-    data: [u8; BSIZE],
+    data: alloc::vec::Vec<u8>,
 }
 
 /// A cached disk block.
@@ -40,7 +40,7 @@ impl Buf {
                 dev,
                 refcnt: 0,
                 valid: false,
-                data: [0; BSIZE],
+                data: alloc::vec![0u8; BSIZE],
             }, "buf"),
         }
     }
@@ -205,9 +205,8 @@ impl BufCache {
 
 /// Initialize the buffer cache.
 pub fn binit() {
-    let sp: usize;
-    unsafe { core::arch::asm!("mv {}, sp", out(reg) sp) };
-    crate::arch::console::printk(format_args!("binit: start sp={:#x}\n", sp));
+    // Debug: print stack pointer (skipped for now)
+    crate::arch::console::printk(format_args!("binit: start\n"));
     let mut cache = BUF_CACHE.acquire();
     for i in 0..NBUF {
         crate::arch::console::printk(format_args!("binit: i={}, before ptr={:#x}\n", i, unsafe { crate::mm::page_table::KERNEL_PAGETABLE_PTR } as usize));

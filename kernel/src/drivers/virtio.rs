@@ -132,19 +132,40 @@ static VIRTIO_DEVICE: Mutex<Option<VirtioDevice>> = Mutex::new(None);
 /// Negotiates features, allocates queue pages, and enables interrupts.
 pub fn virtio_init() {
     crate::arch::console::printk(format_args!("virtio: initializing...\n"));
+    
+    // Try multiple common virtio MMIO addresses for RISC-V virt machine
+    const VIRTIO_BASES: [usize; 8] = [
+        0x10001000, 0x10002000, 0x10003000, 0x10004000,
+        0x10005000, 0x10006000, 0x10007000, 0x10008000,
+    ];
+    
+    let mut v = core::ptr::null_mut();
+    for base in VIRTIO_BASES {
+        unsafe {
+            let magic = (base as *mut u32).add(VIRTIO_MMIO_MAGIC_VALUE / 4).read_volatile();
+            let version = (base as *mut u32).add(VIRTIO_MMIO_VERSION / 4).read_volatile();
+            let device_id = (base as *mut u32).add(VIRTIO_MMIO_DEVICE_ID / 4).read_volatile();
+            
+            if magic == 0x74726976 && (version == 1 || version == 2) && device_id == 2 {
+                crate::arch::console::printk(format_args!("virtio: found block device at {:#x}\n", base));
+                v = base as *mut u32;
+                break;
+            }
+        }
+    }
+    
+    if v.is_null() {
+        crate::arch::console::printk(format_args!("virtio: no block device found!\n"));
+        return;
+    }
+    
     unsafe {
-        let v = VIRTIO0 as *mut u32;
         // Verify device
         let magic = v.add(VIRTIO_MMIO_MAGIC_VALUE / 4).read_volatile();
         let version = v.add(VIRTIO_MMIO_VERSION / 4).read_volatile();
         let device_id = v.add(VIRTIO_MMIO_DEVICE_ID / 4).read_volatile();
         
         crate::arch::console::printk(format_args!("virtio: magic={:#x} version={} device_id={}\n", magic, version, device_id));
-        
-        if magic != 0x74726976 || (version != 1 && version != 2) || device_id != 2 {
-            crate::arch::console::printk(format_args!("virtio: device check failed!\n"));
-            return;
-        }
         
         // Reset
         v.add(VIRTIO_MMIO_STATUS / 4).write_volatile(0);

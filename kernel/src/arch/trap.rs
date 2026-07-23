@@ -122,8 +122,11 @@ pub fn kernelvec_addr() -> usize {
 /// Switch from one context to another.
 /// 
 /// Called from scheduler to switch between processes.
-pub fn context_switch(old: &mut Context, new: &Context) {
-    unsafe { swtch(old as *mut Context, new as *const Context) }
+pub fn context_switch(old: &mut Context, new: &Context, tf_ptr: usize) {
+    unsafe { 
+        core::arch::asm!("mv a0, {}", in(reg) tf_ptr);
+        swtch(old as *mut Context, new as *const Context) 
+    }
 }
 
 /// Prepare trap frame for return to user mode.
@@ -154,6 +157,8 @@ pub extern "C" fn usertrap() -> usize {
     let sepc = r_sepc();
     let scause = r_scause();
     let stval = r_stval();
+    
+    crate::arch::console::printk(format_args!("usertrap: sepc={:#x} scause={} stval={:#x}\n", sepc, scause, stval));
     
     let p = crate::proc::current_process();
     

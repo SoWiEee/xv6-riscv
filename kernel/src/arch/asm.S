@@ -43,7 +43,10 @@ uservec:
     csrrw t0, satp, a0
     sfence.vma
     
-    /* save user registers to trapframe (a0 = trapframe pointer) */
+    /* get trapframe pointer from sscratch */
+    csrr a0, sscratch
+    
+    /* save user registers to trapframe */
     sd ra, 40(a0)
     sd sp, 48(a0)
     sd gp, 56(a0)
@@ -120,16 +123,16 @@ userret:
     ld s3, 184(a0)
     ld s4, 192(a0)
     ld s5, 200(a0)
-    sd s6, 208(a0)
-    sd s7, 216(a0)
-    sd s8, 224(a0)
-    sd s9, 232(a0)
-    sd s10, 240(a0)
-    sd s11, 248(a0)
-    sd t3, 256(a0)
-    sd t4, 264(a0)
-    sd t5, 272(a0)
-    sd t6, 280(a0)
+    ld s6, 208(a0)
+    ld s7, 216(a0)
+    ld s8, 224(a0)
+    ld s9, 232(a0)
+    ld s10, 240(a0)
+    ld s11, 248(a0)
+    ld t3, 256(a0)
+    ld t4, 264(a0)
+    ld t5, 272(a0)
+    ld t6, 280(a0)
     
     /* switch to user page table */
     ld t0, 0(a0)      /* kernel_satp */

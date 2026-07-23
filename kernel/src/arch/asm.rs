@@ -83,6 +83,18 @@ pub fn w_satp(val: usize) {
     write_csr!(satp, val);
 }
 
+/// Write SCRATCH
+#[inline]
+pub fn w_sscratch(val: usize) {
+    write_csr!(sscratch, val);
+}
+
+/// Read SCRATCH
+#[inline]
+pub fn r_sscratch() -> usize {
+    read_csr!(sscratch)
+}
+
 /// Read STVEC
 #[inline]
 pub fn r_stvec() -> usize {

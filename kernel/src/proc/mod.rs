@@ -6,7 +6,7 @@ pub mod trapframe;
 
 use crate::proc::process::{Proc, ProcState, NPROC, NOFILE, ProcInner};
 use crate::arch::trap::Context;
-use crate::arch::asm::r_tp;
+use crate::arch::asm::{r_tp, make_satp};
 use crate::sync::spinlock::{SpinLock, SpinLockGuard};
 use crate::mm::page_table::PageTable;
 use crate::mm::address::PhysPageNum;
@@ -91,16 +91,52 @@ pub fn userinit() {
         crate::arch::paging::PTE_R | crate::arch::paging::PTE_X
     ).unwrap();
     
+    // Load init binary into user page table
+    let entry = crate::elf::load_elf_from_bytes(crate::elf::INIT_BINARY, &mut pt)
+        .expect("userinit: load_elf_from_bytes failed");
+    crate::arch::console::printk(format_args!("userinit: entry={:#x}\n", entry));
+    
+    // Allocate user stack pages (4 pages = 16KB)
+    let user_stack_top = 0x80000000; // Page-aligned top (2GB)
+    let user_stack_bottom = user_stack_top - 4 * crate::arch::paging::PAGE_SIZE;
+    crate::arch::console::printk(format_args!("userinit: mapping stack {:#x}..{:#x}\n", user_stack_bottom, user_stack_top));
+    // Use pt.map directly since uvmalloc is for heap growth
+    for vaddr in (user_stack_bottom..user_stack_top).step_by(crate::arch::paging::PAGE_SIZE) {
+        let page = crate::mm::frame_allocator::kalloc().expect("userinit: failed to alloc stack page");
+        pt.map(crate::mm::address::VirtAddr(vaddr), page.to_paddr(), crate::arch::paging::PTE_R | crate::arch::paging::PTE_W | crate::arch::paging::PTE_U).expect("userinit: failed to map stack page");
+    }
+    // Verify mapping
+    let test_addr = user_stack_top - 0x20; // Near top
+    if let Some(pa) = pt.translate(crate::mm::address::VirtAddr(test_addr)) {
+        crate::arch::console::printk(format_args!("userinit: stack mapping verified at {:#x} -> {:#x}\n", test_addr, pa.0));
+    } else {
+        crate::arch::console::printk(format_args!("userinit: stack mapping FAILED at {:#x}\n", test_addr));
+    }
+    
     inner.pagetable = Some(pt);
-    inner.sz = 0;
+    inner.sz = user_stack_top;
     
     // Set up trapframe
     let tf = unsafe { &mut *inner.trapframe };
-    tf.kernel_satp = crate::mm::page_table::kernel_pagetable();
+    // kernel_satp should be the user page table's satp value for userret to switch to
+    if let Some(pt) = &inner.pagetable {
+        tf.kernel_satp = crate::mm::address::PhysPageNum::new(make_satp(pt.root_ppn().0) & ((1 << 44) - 1));
+    } else {
+        tf.kernel_satp = crate::mm::page_table::kernel_pagetable();
+    }
     tf.kernel_sp = inner.kstack + 4096;
     tf.kernel_trap = crate::arch::trap::usertrap as usize;
-    tf.epc = 0; // User entry point
-    tf.sp = 0;  // User stack pointer
+    tf.epc = entry;
+    
+    // Set up user stack
+    let (sp, argv_ptr) = crate::elf::setup_user_stack(
+        inner.pagetable.as_mut().unwrap(),
+        &[alloc::string::String::from("init")],
+        user_stack_top
+    ).expect("userinit: setup_user_stack failed");
+    tf.sp = sp;
+    tf.a0 = 1; // argc
+    tf.a1 = argv_ptr; // argv pointer
     
     // Set up context for first return to user
     inner.context.ra = crate::arch::trap::userret as usize;

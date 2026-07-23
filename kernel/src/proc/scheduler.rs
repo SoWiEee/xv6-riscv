@@ -1,7 +1,7 @@
 // kernel/src/proc/scheduler.rs
 use crate::proc::process::{Proc, ProcState, NPROC, NOFILE};
 use crate::arch::trap::{TrapFrame, Context};
-use crate::arch::asm::{intr_on, intr_off, intr_get, w_satp, make_satp, r_tp};
+use crate::arch::asm::{intr_on, intr_off, intr_get, w_satp, make_satp, r_tp, r_sstatus, w_sstatus, w_sepc};
 use crate::mm::page_table::{PageTable, kernel_pagetable, uvmcreate, uvmalloc, uvmfree, uvmcopy};
 use crate::mm::frame_allocator::{alloc_page, free_page};
 use crate::sync::spinlock::SpinLock;
@@ -113,15 +113,30 @@ pub fn scheduler() -> ! {
                     w_satp(satp);
                 }
                 
-                // Save context pointer before dropping lock
+                // Prepare return to user mode: set sstatus.SPP=0, SPIE=1
+                {
+                    let mut sstatus = crate::arch::asm::r_sstatus();
+                    sstatus &= !0x100; // clear SPP (bit 8)
+                    sstatus |= 0x20;   // set SPIE (bit 5)
+                    crate::arch::asm::w_sstatus(sstatus);
+                    // Set sepc from trapframe
+                    let tf = unsafe { &*inner.trapframe };
+                    crate::arch::asm::w_sepc(tf.epc);
+                    // Set sscratch to trapframe pointer for uservec
+                    crate::arch::asm::w_sscratch(inner.trapframe as usize);
+                }
+                
+                // Save context pointer and trapframe pointer before dropping lock
                 let ctx_ptr = &mut inner.context as *mut _;
+                let tf_ptr = inner.trapframe as usize;
                 
                 drop(inner);
                 
                 // Context switch to the process
                 crate::arch::trap::context_switch(
                     &mut cpu.context,
-                    unsafe { &mut *ctx_ptr }
+                    unsafe { &mut *ctx_ptr },
+                    tf_ptr
                 );
                 
                 // After returning, we're back in kernel
@@ -151,7 +166,7 @@ pub fn sched() {
         panic!("sched: running");
     }
     let cpu = crate::proc::mycpu();
-    crate::arch::trap::context_switch(&mut inner.context, &cpu.context);
+    crate::arch::trap::context_switch(&mut inner.context, &cpu.context, 0);
 }
 
 pub fn scheduler_started() -> bool {

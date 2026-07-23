@@ -10,6 +10,11 @@ use crate::arch::paging::{PageTableEntry, PageTableWalker, PAGE_SIZE, PTE_V, PTE
 use crate::arch::asm::sfence_vma;
 use alloc::boxed::Box;
 
+unsafe extern "C" {
+    #[link_name = "uservec"]
+    fn uservec();
+}
+
 /// A Sv39 page table.
 /// 
 /// Owns the root page table page and all descendant pages. When dropped,
@@ -204,8 +209,10 @@ fn map_kernel(pt: &mut PageTable) {
         pt.map(vaddr, paddr, PTE_R | PTE_W).unwrap();
     }
     
-    // Trampoline
-    pt.map(VirtAddr(crate::arch::asm::TRAMPOLINE), PhysAddr(crate::arch::asm::TRAMPOLINE), PTE_R | PTE_X).unwrap();
+    // Trampoline - map the page containing uservec to TRAMPOLINE virtual address
+    let uservec_addr = uservec as usize;
+    let trampoline_paddr = PhysAddr((uservec_addr / PAGE_SIZE) * PAGE_SIZE);
+    pt.map(VirtAddr(crate::arch::asm::TRAMPOLINE), trampoline_paddr, PTE_R | PTE_X).unwrap();
     
     // Kernel stacks for each CPU - map 1MB for stacks with guard pages
     // 8 CPUs, each gets 128KB (32 pages): 31 pages stack + 1 guard page
@@ -243,8 +250,10 @@ pub fn kvminithart() {
 /// Create a new user page table with trampoline mapped.
 pub fn uvmcreate() -> Result<PageTable, &'static str> {
     let mut pt = PageTable::new()?;
-    // Map trampoline
-    pt.map(VirtAddr(crate::arch::asm::TRAMPOLINE), PhysAddr(crate::arch::asm::TRAMPOLINE), PTE_R | PTE_X).unwrap();
+    // Map trampoline - map the page containing uservec to TRAMPOLINE virtual address
+    let uservec_addr = uservec as usize;
+    let trampoline_paddr = PhysAddr((uservec_addr / PAGE_SIZE) * PAGE_SIZE);
+    pt.map(VirtAddr(crate::arch::asm::TRAMPOLINE), trampoline_paddr, PTE_R | PTE_X).unwrap();
     Ok(pt)
 }
 
