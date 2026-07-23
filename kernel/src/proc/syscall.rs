@@ -6,11 +6,12 @@ use crate::proc::process::Proc;
 use crate::mm::page_table::{PageTable, uvmcreate, uvmalloc, uvmfree, uvmcopy, kernel_pagetable};
 use crate::mm::frame_allocator::{alloc_page, free_page};
 use crate::mm::address::{PhysAddr, PhysPageNum, VirtAddr};
-use crate::arch::asm::{make_satp, r_satp, w_satp, sfence_vma};
+use crate::arch::asm::{make_satp, r_satp, w_satp, sfence_vma, TRAMPOLINE};
 use crate::sync::spinlock::SpinLock;
-use crate::fs::{File, Inode, filealloc, fileclose, fileread, filewrite, filedup, iupdate, namei, nameiparent, dirlink, dirlookup, ialloc, iput, begin_op, end_op, I_DIR, I_FILE, I_DEV};
+use crate::fs::{File, Inode, filealloc, fileclose, filewrite, filedup, fileread, iupdate, namei, nameiparent, dirlink, dirlookup, ialloc, iput, begin_op, end_op, I_DIR, I_FILE, I_DEV};
 use crate::arch::console::printk;
 use crate::printk;
+use crate::elf::{load_elf, setup_user_stack};
 use core::fmt::Arguments;
 use alloc::vec::Vec;
 use alloc::string::String;
@@ -431,18 +432,48 @@ fn sys_exec(path: usize, argv: usize) -> isize {
     }
     inode.unlock();
     
+    // Create a file to read the ELF
+    let file = crate::fs::filealloc().ok_or(-1).unwrap();
+    {
+        let mut file_inner = file.inner();
+        file_inner.typ = crate::fs::FileType::Inode;
+        file_inner.readable = true;
+        file_inner.writable = false;
+        file_inner.inode = Some(inode);
+        file_inner.off = 0;
+    }
+    
     // Create new page table for the process
-    let new_pt = match crate::mm::page_table::uvmcreate() {
+    let mut new_pt = match crate::mm::page_table::uvmcreate() {
         Ok(pt) => pt,
         Err(_) => {
-            crate::fs::iput(inode);
+            crate::fs::fileclose(&file);
             return -1;
         }
     };
     
-    // Load program (simplified - just exec init for now)
-    // In a real implementation, this would parse ELF and load segments
-    // For now, we just succeed if the file exists
+    // Load ELF executable
+    let entry_point = match load_elf(&file, &mut new_pt) {
+        Ok(entry) => entry,
+        Err(e) => {
+            crate::printk!("load_elf failed: {}\n", e);
+            crate::fs::fileclose(&file);
+            crate::mm::page_table::uvmfree(&mut new_pt, 0);
+            return -1;
+        }
+    };
+    
+    // Set up user stack
+    let user_stack_top = 0x7ffffff0;
+    let (sp, argv_ptr) = match setup_user_stack(&mut new_pt, &args, user_stack_top) {
+        Ok(res) => res,
+        Err(e) => {
+            crate::printk!("setup_user_stack failed: {}\n", e);
+            crate::fs::fileclose(&file);
+            crate::mm::page_table::uvmfree(&mut new_pt, 0);
+            return -1;
+        }
+    };
     
     let p = current_process();
     let mut inner = p.lock();
@@ -453,19 +484,16 @@ fn sys_exec(path: usize, argv: usize) -> isize {
     }
     
     inner.pagetable = Some(new_pt);
-    inner.sz = 0; // Will be set by loading
+    inner.sz = sp; // Use stack top as size approximation
     
     // Set up trapframe for user entry
     let tf = unsafe { &mut *inner.trapframe };
-    tf.epc = 0x10000; // Standard user entry point
-    tf.sp = 0x7ffffff0; // User stack top
+    tf.epc = entry_point;
+    tf.sp = sp;
+    tf.a0 = args.len() as usize; // argc
+    tf.a1 = argv_ptr; // argv pointer
     
-    // Set up argc/argv on user stack
-    // Simplified - just set a0/argc and a1/argv
-    tf.a0 = args.len() as usize;
-    tf.a1 = 0x7ffffff0; // argv pointer (simplified)
-    
-    crate::fs::iput(inode);
+    crate::fs::fileclose(&file);
     
     0
 }
