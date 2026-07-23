@@ -5,6 +5,11 @@
 _start:
     /* Set up stack pointer */
     la sp, _stack_end
+    /* Delegate S-mode exceptions/interrupts to S-mode (must be in M-mode) */
+    li a0, 0xbfff
+    csrw medeleg, a0
+    li a0, 0x222
+    csrw mideleg, a0
     /* Print 'A' to UART to verify we're running */
     li a0, 0x10000000
     li a1, 'A'

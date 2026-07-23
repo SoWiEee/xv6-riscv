@@ -6,7 +6,7 @@ pub mod trapframe;
 
 use crate::proc::process::{Proc, ProcState, NPROC, NOFILE, ProcInner};
 use crate::arch::trap::Context;
-use crate::arch::asm::{r_tp, make_satp};
+use crate::arch::asm::{r_tp, make_satp, TRAMPOLINE};
 use crate::sync::spinlock::{SpinLock, SpinLockGuard};
 use crate::mm::page_table::PageTable;
 use crate::mm::address::PhysPageNum;
@@ -140,7 +140,12 @@ pub fn userinit() {
     tf.a1 = argv_ptr; // argv pointer
     
     // Set up context for first return to user
-    inner.context.ra = crate::arch::trap::userret as usize;
+    // Use trampoline version of userret (same page as uservec)
+    unsafe extern "C" { fn uservec(); fn userret(); }
+    let uservec_addr = uservec as usize;
+    let userret_addr = userret as usize;
+    let trampoline_userret = TRAMPOLINE + (userret_addr - uservec_addr);
+    inner.context.ra = trampoline_userret;
     inner.context.sp = inner.kstack + 4096;
     
     inner.pid = 1;
