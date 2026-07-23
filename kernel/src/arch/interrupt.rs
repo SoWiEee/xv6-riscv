@@ -58,9 +58,7 @@ pub fn devintr() -> u32 {
 }
 
 fn clock_intr() {
-    if r_tp() == 0 {
-        crate::proc::tick();
-    }
+    crate::proc::tick();
     w_stimecmp(r_time() + 1000000);
 }
 

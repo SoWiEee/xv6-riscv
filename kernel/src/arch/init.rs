@@ -73,4 +73,6 @@ fn started() -> bool {
 pub fn trapinit() {
     // Set up trap vector for kernel mode
     w_stvec(super::trap::kernelvec_addr());
+    // Set initial timer interrupt
+    w_stimecmp(r_time() + 1000000);
 }
