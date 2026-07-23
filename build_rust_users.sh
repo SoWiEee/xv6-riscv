@@ -3,7 +3,7 @@ set -e
 
 # Build Rust user programs (release for smaller size)
 echo "Building Rust user programs..."
-cargo build --release -p xv6-user
+cargo build --release --target riscv64imac-unknown-none-elf -p xv6-user
 
 # Copy binaries to user directory with _ prefix (as mkfs expects)
 echo "Copying binaries..."

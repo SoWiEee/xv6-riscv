@@ -6,7 +6,7 @@
 
 use super::address::{PhysAddr, PhysPageNum, VirtAddr};
 use super::frame_allocator::{alloc_page, free_page};
-use crate::arch::paging::{PageTableEntry, PageTableWalker, PAGE_SIZE, PTE_V, PTE_R, PTE_W, PTE_X, PTE_U};
+use crate::arch::paging::{PageTableEntry, PageTableWalker, PAGE_SIZE, PTE_V, PTE_R, PTE_W, PTE_X, PTE_U, PTE_A, PTE_D};
 use crate::arch::asm::sfence_vma;
 use alloc::boxed::Box;
 
@@ -66,7 +66,10 @@ impl PageTable {
         let pte = self.walker.walk(vaddr, true).ok_or("walk failed")?;
         if pte.is_valid() { return Err("remap"); }
         pte.set_ppn(PhysPageNum::new(paddr.0 >> 12));
-        pte.set_flags(flags | PTE_V);
+        // Set A (accessed) and D (dirty) up front: this QEMU implements Svade
+        // (no hardware A/D update), so a leaf PTE with A=0 faults on first
+        // access. Pre-setting them avoids a fault we have no reason to take.
+        pte.set_flags(flags | PTE_V | PTE_A | PTE_D);
         Ok(())
     }
     
@@ -181,8 +184,11 @@ fn map_kernel(pt: &mut PageTable) {
     pt.map(VirtAddr(0x10000000), PhysAddr(0x10000000), PTE_R | PTE_W).unwrap();
     // VIRTIO
     pt.map(VirtAddr(0x10001000), PhysAddr(0x10001000), PTE_R | PTE_W).unwrap();
-    // PLIC
-    pt.map(VirtAddr(0x0C000000), PhysAddr(0x0C000000), PTE_R | PTE_W).unwrap();
+    // PLIC - the register block spans ~4MB (priority, pending, enables, and the
+    // per-hart threshold/claim windows up to 0x0C200000+), so map the whole range.
+    for off in (0..0x400000).step_by(PAGE_SIZE) {
+        pt.map(VirtAddr(0x0C000000 + off), PhysAddr(0x0C000000 + off), PTE_R | PTE_W).unwrap();
+    }
     // Kernel text (read-only, executable)
     unsafe extern "C" {
         fn etext();
@@ -200,41 +206,24 @@ fn map_kernel(pt: &mut PageTable) {
         pt.map(vaddr, paddr, PTE_R | PTE_X).unwrap();
     }
     
-    // Map kernel data (RW)
-    let data_start = (etext + PAGE_SIZE - 1) & !(PAGE_SIZE - 1); // Page align up
-    let data_pages = (end - data_start + PAGE_SIZE - 1) / PAGE_SIZE;
+    // Map everything from etext up to PHYSTOP as RW: kernel data, bss, the boot
+    // stack, the kernel heap, and the physical page pool the frame allocator
+    // hands out (page tables, per-process kernel stacks, trapframes, user pages
+    // before they are installed). This mirrors xv6's kvmmake and guarantees the
+    // kernel can reach any page it allocates once S-mode paging is enabled.
+    let _ = end;
+    let data_start = (etext + PAGE_SIZE - 1) & !(PAGE_SIZE - 1); // page align up
+    let phystop = crate::arch::asm::PHYSTOP;
+    let data_pages = (phystop - data_start) / PAGE_SIZE;
     for i in 0..data_pages {
-        let vaddr = VirtAddr(data_start + i * PAGE_SIZE);
-        let paddr = PhysAddr(data_start + i * PAGE_SIZE);
-        pt.map(vaddr, paddr, PTE_R | PTE_W).unwrap();
+        let addr = data_start + i * PAGE_SIZE;
+        pt.map(VirtAddr(addr), PhysAddr(addr), PTE_R | PTE_W).unwrap();
     }
-    
+
     // Trampoline - map the page containing uservec to TRAMPOLINE virtual address
     let uservec_addr = uservec as usize;
     let trampoline_paddr = PhysAddr((uservec_addr / PAGE_SIZE) * PAGE_SIZE);
     pt.map(VirtAddr(crate::arch::asm::TRAMPOLINE), trampoline_paddr, PTE_R | PTE_X).unwrap();
-    
-    // Kernel stacks for each CPU - map 1MB for stacks with guard pages
-    // 8 CPUs, each gets 128KB (32 pages): 31 pages stack + 1 guard page
-    let stack_top = crate::arch::asm::PHYSTOP;
-    const NCPU: usize = 8;
-    const STACK_PAGES_PER_CPU: usize = 31; // 124KB stack
-    const GUARD_PAGES_PER_CPU: usize = 1;  // 4KB guard page
-    const PAGES_PER_CPU: usize = STACK_PAGES_PER_CPU + GUARD_PAGES_PER_CPU; // 32 pages = 128KB
-    
-    for cpu in 0..NCPU {
-        // Stack grows down, so stack is at higher addresses, guard at lower
-        let cpu_stack_top = stack_top - cpu * PAGES_PER_CPU * PAGE_SIZE;
-        
-        // Map stack pages (31 pages)
-        for i in 0..STACK_PAGES_PER_CPU {
-            let vaddr = VirtAddr(cpu_stack_top - (i + 1) * PAGE_SIZE);
-            let paddr = PhysAddr(cpu_stack_top - (i + 1) * PAGE_SIZE);
-            pt.map(vaddr, paddr, PTE_R | PTE_W).unwrap();
-        }
-        // Guard page at cpu_stack_top - STACK_PAGES_PER_CPU * PAGE_SIZE (lowest address of this CPU's region)
-        // Left unmapped to catch stack overflow
-    }
 }
 
 /// Activate the kernel page table on the current hart.

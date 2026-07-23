@@ -84,13 +84,25 @@ pub fn userinit() {
     // Create user page table
     let mut pt = PageTable::new().expect("userinit: failed to create page table");
     
-    // Map trampoline
+    // Map the trampoline (uservec/userret) at TRAMPOLINE. It lives in the
+    // kernel .text, so map the physical page that actually contains it (NOT
+    // the TRAMPOLINE virtual address).
+    unsafe extern "C" { fn uservec(); }
+    let trampoline_pa = (uservec as usize / crate::arch::paging::PAGE_SIZE) * crate::arch::paging::PAGE_SIZE;
     pt.map(
         crate::mm::address::VirtAddr(crate::arch::asm::TRAMPOLINE),
-        crate::mm::address::PhysAddr(crate::arch::asm::TRAMPOLINE),
+        crate::mm::address::PhysAddr(trampoline_pa),
         crate::arch::paging::PTE_R | crate::arch::paging::PTE_X
     ).unwrap();
-    
+
+    // Map this process's trapframe at the fixed TRAPFRAME address so the
+    // trampoline can reach it under the user page table. Supervisor-only (no U).
+    pt.map(
+        crate::mm::address::VirtAddr(crate::arch::asm::TRAPFRAME),
+        crate::mm::address::PhysAddr(inner.trapframe as usize),
+        crate::arch::paging::PTE_R | crate::arch::paging::PTE_W
+    ).unwrap();
+
     // Load init binary into user page table
     let entry = crate::elf::load_elf_from_bytes(crate::elf::INIT_BINARY, &mut pt)
         .expect("userinit: load_elf_from_bytes failed");
@@ -116,19 +128,12 @@ pub fn userinit() {
     inner.pagetable = Some(pt);
     inner.sz = user_stack_top;
     
-    // Set up trapframe
+    // Set up the trapframe user state. The kernel_* fields are filled in by
+    // usertrapret on the way out to user mode, so we only set epc/sp/argc/argv.
     let tf = unsafe { &mut *inner.trapframe };
-    // kernel_satp should be the user page table's full satp value (mode + PPN) for userret to switch to
-    if let Some(pt) = &inner.pagetable {
-        tf.kernel_satp = crate::mm::address::PhysPageNum::new(make_satp(pt.root_ppn().0));
-    } else {
-        tf.kernel_satp = crate::mm::page_table::kernel_pagetable();
-    }
-    tf.kernel_sp = inner.kstack + 4096;
-    tf.kernel_trap = crate::arch::trap::usertrap as usize;
     tf.epc = entry;
     crate::arch::console::printk(format_args!("userinit: tf.epc={:#x} tf@={:#x}\n", tf.epc, inner.trapframe as usize));
-    
+
     // Set up user stack
     let (sp, argv_ptr) = crate::elf::setup_user_stack(
         inner.pagetable.as_mut().unwrap(),
@@ -138,15 +143,11 @@ pub fn userinit() {
     tf.sp = sp;
     tf.a0 = 1; // argc
     tf.a1 = argv_ptr; // argv pointer
-    
-    // Set up context for first return to user
-    // Use trampoline version of userret (same page as uservec)
-    unsafe extern "C" { fn uservec(); fn userret(); }
-    let uservec_addr = uservec as usize;
-    let userret_addr = userret as usize;
-    let trampoline_userret = TRAMPOLINE + (userret_addr - uservec_addr);
-    inner.context.ra = trampoline_userret;
-    inner.context.sp = inner.kstack + 4096;
+
+    // First run starts at forkret (kernel code), which calls usertrapret to
+    // enter user mode via the trampoline.
+    inner.context.ra = crate::arch::trap::forkret as usize;
+    inner.context.sp = inner.kstack + crate::arch::paging::PAGE_SIZE;
     
     inner.pid = 1;
     inner.state = ProcState::Runnable;
@@ -165,8 +166,16 @@ pub fn userinit() {
 }
 
 // Wait queues for sleep/wakeup - using usize (process pointer as usize) to avoid Send issues
-static WAIT_QUEUES: SpinLock<BTreeMap<usize, Vec<usize>>> = 
+static WAIT_QUEUES: SpinLock<BTreeMap<usize, Vec<usize>>> =
     SpinLock::new(BTreeMap::new(), "wait_queues");
+
+/// Global lock protecting the parent/child relationship used by wait/exit,
+/// mirroring xv6's `wait_lock`. It must be a distinct lock from any individual
+/// `proc.lock`: `sleep` internally locks the sleeping proc (via `set_state`) and
+/// `sched` locks it again, so the lock handed to `sleep` must NOT be that proc's
+/// own lock. Holding this across the child-scan and across `exit`'s wakeup also
+/// closes the lost-wakeup race.
+pub static WAIT_LOCK: SpinLock<()> = SpinLock::new((), "wait_lock");
 
 /// Sleep on a channel, releasing the given lock.
 /// The lock must be held before calling sleep.

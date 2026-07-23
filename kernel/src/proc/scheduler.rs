@@ -1,7 +1,7 @@
 // kernel/src/proc/scheduler.rs
 use crate::proc::process::{Proc, ProcState, NPROC, NOFILE};
 use crate::arch::trap::{TrapFrame, Context};
-use crate::arch::asm::{intr_on, intr_off, intr_get, w_satp, make_satp, r_tp, r_sstatus, w_sstatus, w_sepc};
+use crate::arch::asm::{intr_on, intr_off, intr_get, w_satp, make_satp, r_tp, r_sstatus, w_sstatus, w_sepc, w_stvec, TRAMPOLINE};
 use crate::mm::page_table::{PageTable, kernel_pagetable, uvmcreate, uvmalloc, uvmfree, uvmcopy};
 use crate::mm::frame_allocator::{alloc_page, free_page};
 use crate::sync::spinlock::SpinLock;
@@ -51,7 +51,14 @@ pub fn alloc_proc() -> Option<&'static Proc> {
             inner.state = ProcState::Used;
             inner.pid = next_pid();
             inner.kstack = alloc_kernel_stack();
-            inner.trapframe = (inner.kstack + 4096 - core::mem::size_of::<TrapFrame>()) as *mut TrapFrame;
+            // The trapframe needs its own page-aligned page so it can be mapped
+            // at the fixed TRAPFRAME virtual address in the user page table.
+            inner.trapframe = alloc_page()
+                .expect("alloc_proc: out of memory for trapframe")
+                .to_paddr().0 as *mut TrapFrame;
+            // Fresh frames from the allocator are not zeroed; a garbage trapframe
+            // would be restored into user registers (e.g. gp/tp) by userret.
+            unsafe { *inner.trapframe = TrapFrame::new(); }
             inner.context = Context::new();
             inner.name = [0; 16];
             inner.ofile = [const { None }; NOFILE];
@@ -103,46 +110,28 @@ pub fn scheduler() -> ! {
                 crate::arch::console::printk(format_args!("scheduler: found runnable pid={}\n", inner.pid));
                 inner.state = ProcState::Running;
                 
-                // Set current process for this CPU while holding lock
+                // Set current process for this CPU while holding the lock.
                 let cpu = crate::proc::mycpu();
                 cpu.proc = Some(p);
-                
-                // Switch to process's page table
-                if let Some(pt) = &inner.pagetable {
-                    let satp = make_satp(pt.root_ppn().0);
-                    w_satp(satp);
-                }
-                
-                // Prepare return to user mode: set sstatus.SPP=0, SPIE=1
-                {
-                    let mut sstatus = crate::arch::asm::r_sstatus();
-                    sstatus &= !0x100; // clear SPP (bit 8)
-                    sstatus |= 0x20;   // set SPIE (bit 5)
-                    crate::arch::asm::w_sstatus(sstatus);
-                    // Set sepc from trapframe
-                    let tf = unsafe { &*inner.trapframe };
-                    crate::arch::asm::w_sepc(tf.epc);
-                    // Set sscratch to trapframe pointer for uservec
-                    crate::arch::asm::w_sscratch(inner.trapframe as usize);
-                }
-                
-                // Save context pointer and trapframe pointer before dropping lock
-                let ctx_ptr = &mut inner.context as *mut _;
-                let tf_ptr = inner.trapframe as usize;
-                
+
+                // Do NOT touch satp/sstatus/sepc/stvec here. On a process's
+                // first run new.ra = forkret, which calls usertrapret; that is
+                // what programs the return-to-user CSRs and switches to the user
+                // page table (inside the trampoline `userret`). The scheduler
+                // itself runs entirely under the kernel page table.
+                let ctx_ptr = &mut inner.context as *mut Context;
                 drop(inner);
-                
-                // Context switch to the process
+
+                // Switch into the process. Control returns here when the process
+                // switches back out (via sched()), still on the kernel page table.
                 crate::arch::trap::context_switch(
                     &mut cpu.context,
-                    unsafe { &mut *ctx_ptr },
-                    tf_ptr
+                    unsafe { &*ctx_ptr },
+                    0,
                 );
-                
-                // After returning, we're back in kernel
+
                 let cpu = crate::proc::mycpu();
                 cpu.proc = None;
-                w_satp(kernel_pagetable().0);
             }
         }
     }
@@ -158,15 +147,22 @@ pub fn yield_now() {
 
 pub fn sched() {
     let p = crate::proc::current_process();
-    let mut inner = p.lock();
-    if intr_get() {
-        panic!("sched: interrupts enabled");
-    }
-    if inner.state == ProcState::Running {
-        panic!("sched: running");
-    }
+
+    // Snapshot a raw pointer to our saved-context slot, then RELEASE p.lock
+    // before switching away. The context slot lives in the PROCS static (stable
+    // for the life of the process), so the pointer stays valid after the guard
+    // drops. Releasing the lock is essential: the scheduler re-locks every proc
+    // on each pass, so if we held p.lock across the switch its frame would be
+    // frozen with the lock held and the scheduler would deadlock re-locking us.
+    let ctx_ptr = {
+        let mut inner = p.lock();
+        if inner.state == ProcState::Running {
+            panic!("sched: running");
+        }
+        &mut inner.context as *mut Context
+    };
     let cpu = crate::proc::mycpu();
-    crate::arch::trap::context_switch(&mut inner.context, &cpu.context, 0);
+    crate::arch::trap::context_switch(unsafe { &mut *ctx_ptr }, &cpu.context, 0);
 }
 
 pub fn scheduler_started() -> bool {

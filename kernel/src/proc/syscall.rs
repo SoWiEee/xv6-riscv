@@ -43,9 +43,17 @@ pub const SYS_MAX: usize = 21;
 
 pub fn proc_syscall() {
     let p = current_process();
-    let tf = unsafe { &mut *p.lock().trapframe };
-    let num = tf.a7;
     
+    // Get trapframe pointer without holding the lock across the syscall
+    let tf_ptr = {
+        let inner = p.lock();
+        inner.trapframe
+    };
+    let tf = unsafe { &mut *tf_ptr };
+    
+    let num = tf.a7;
+    crate::arch::console::printk(format_args!("syscall: num={} a0={:#x}\n", num, tf.a0));
+
     tf.a0 = match num {
         SYS_FORK => sys_fork() as usize,
         SYS_EXIT => { sys_exit(tf.a0 as i32); 0 },
@@ -77,26 +85,50 @@ pub fn proc_syscall() {
 
 fn sys_fork() -> isize {
     let p = current_process();
-    let mut pinner = p.lock();
-    
-    // Allocate new process
+
+    // Allocate the child FIRST, before locking the parent. `alloc_proc` iterates
+    // over all procs and locks each one in turn; if we held the parent's lock
+    // here it would try to re-lock the parent (the first entry in PROCS) and
+    // self-deadlock on the spinlock. This mirrors xv6, where `fork` calls
+    // `allocproc()` without holding `p->lock`.
     let np = match alloc_proc() {
         Some(proc) => proc,
         None => return -1,
     };
     let mut npinner = np.lock();
-    
+
+    // Now it is safe to lock the parent. Lock order is child-before-parent and
+    // is used consistently in fork.
+    let mut pinner = p.lock();
+
     // Copy page table
     npinner.pagetable = match uvmcreate() {
         Ok(pt) => Some(pt),
         Err(_) => {
+            drop(npinner);
             free_proc(np);
             return -1;
         }
     };
-    
+
+    // uvmcreate only maps the trampoline. The child also needs ITS OWN trapframe
+    // mapped at the fixed TRAPFRAME address, or the trampoline `uservec` will
+    // fault (and fault-loop) on the child's first trap. Mirrors userinit.
+    {
+        let tf_pa = npinner.trapframe as usize;
+        if let Some(pt) = npinner.pagetable.as_mut() {
+            pt.map(
+                crate::mm::address::VirtAddr(crate::arch::asm::TRAPFRAME),
+                crate::mm::address::PhysAddr(tf_pa),
+                crate::arch::paging::PTE_R | crate::arch::paging::PTE_W,
+            )
+            .unwrap();
+        }
+    }
+
     if let (Some(src_pt), Some(dst_pt)) = (&pinner.pagetable, &mut npinner.pagetable) {
         if uvmcopy(src_pt, dst_pt, pinner.sz).is_err() {
+            drop(npinner);
             free_proc(np);
             return -1;
         }
@@ -122,7 +154,15 @@ fn sys_fork() -> isize {
     
     // Copy name
     npinner.name = pinner.name;
-    
+
+    // Set up the child's kernel context so the scheduler enters `forkret` on its
+    // first run (which heads out to user mode via usertrapret), on the child's
+    // own kernel stack. alloc_proc zeroed the context, so without this the
+    // scheduler would `ret` to address 0.
+    npinner.context = crate::arch::trap::Context::new();
+    npinner.context.ra = crate::arch::trap::forkret as usize;
+    npinner.context.sp = npinner.kstack + crate::arch::paging::PAGE_SIZE;
+
     drop(npinner);
     drop(pinner);
     
@@ -165,52 +205,65 @@ pub fn sys_exit(code: i32) -> ! {
 
 fn sys_wait(addr: usize) -> isize {
     let p = current_process();
+    let p_ptr = p as *const crate::proc::process::Proc as *mut crate::proc::process::Proc;
+
+    // Hold the global wait_lock across the whole loop, exactly like xv6. This
+    // serialises us against a child's exit()+wakeup and prevents a lost wakeup.
+    let mut wl = crate::proc::WAIT_LOCK.acquire();
     loop {
         let mut found = false;
+        let mut have_kids = false;
         let mut child_pid = 0;
         let mut child_xstate = 0;
-        
-        // Look for zombie children
-        let mut inner = p.lock();
+
+        // Scan the process table for our children. We never lock p itself here
+        // (it is in PROCS): p is never its own child, and skipping it also avoids
+        // a self-deadlock on the spinlock.
         for np in &crate::proc::scheduler::PROCS {
+            if core::ptr::eq(np as *const _, p as *const _) {
+                continue;
+            }
             let ninner = np.lock();
-            if ninner.parent == Some(p as *const crate::proc::process::Proc as *mut crate::proc::process::Proc) {
+            if ninner.parent == Some(p_ptr) {
+                have_kids = true;
                 if ninner.state == ProcState::Zombie {
-                    // Found zombie child
                     child_pid = ninner.pid;
                     child_xstate = ninner.xstate;
                     found = true;
-                    
-                    // Free the child
+                    drop(ninner); // release before free_proc re-acquires np.lock
                     free_proc(np);
                     break;
                 }
             }
         }
-        drop(inner);
-        
+
         if found {
-            // Copy xstate to user address
-            let p = current_process();
+            // Copy the child's exit status back to the parent's user address.
             let mut p_inner = p.lock();
-            let pt = p_inner.pagetable.as_mut().unwrap();
-            let va = crate::mm::address::VirtAddr(addr);
-            if let Some(pa) = pt.translate(va) {
-                let dst = pa.0 as *mut i32;
-                unsafe { *dst = child_xstate; }
+            if let Some(pt) = p_inner.pagetable.as_mut() {
+                let va = crate::mm::address::VirtAddr(addr);
+                if let Some(pa) = pt.translate(va) {
+                    unsafe { *(pa.0 as *mut i32) = child_xstate; }
+                }
             }
+            drop(p_inner);
+            drop(wl);
             return child_pid as isize;
         }
-        
-        // No zombie child found, sleep
-        if p.lock().killed {
+
+        // No zombie yet. Give up if we have no children or were killed.
+        if !have_kids || p.lock().killed {
+            drop(wl);
             return -1;
         }
-        
-        let p = current_process();
-        let wait_chan = p as *const _ as usize;
-        let p_lock = p.lock();
-        crate::proc::sleep(wait_chan, &p.lock);
+
+        // Sleep on our own proc pointer, atomically releasing wait_lock. `sleep`
+        // expects a HELD lock (not p's own) and releases it via release_raw, so
+        // `forget` prevents the guard Drop from double-releasing. On return
+        // wait_lock is released, so re-acquire it for the next iteration.
+        core::mem::forget(wl);
+        crate::proc::sleep(p_ptr as usize, &crate::proc::WAIT_LOCK);
+        wl = crate::proc::WAIT_LOCK.acquire();
     }
 }
 

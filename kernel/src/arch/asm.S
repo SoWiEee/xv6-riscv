@@ -37,16 +37,30 @@ swtch:
     ld s11, 104(a1)
     ret
 
-/* uservec: trampoline entry from user mode */
+/*
+ * Trampoline: uservec / userret.
+ *
+ * This code is mapped at the same virtual address (TRAMPOLINE) in the kernel
+ * page table and in every user page table, so it keeps executing across the
+ * satp switch. The per-process TrapFrame is mapped at the fixed virtual
+ * address TRAPFRAME (= TRAMPOLINE - PGSIZE) in each user page table.
+ *
+ * TrapFrame field offsets (repr(C), see arch/trap.rs):
+ *   0 kernel_satp   8 kernel_sp   16 kernel_trap   24 epc   32 kernel_hartid
+ *  40 ra  48 sp  56 gp  64 tp  72 t0  80 t1  88 t2
+ *  96 s0 104 s1 112 s2 120 s3 128 s4 136 s5 144 s6 152 s7 160 s8 168 s9
+ * 176 s10 184 s11 192 a0 200 a1 208 a2 216 a3 224 a4 232 a5 240 a6 248 a7
+ * 256 t3 264 t4 272 t5 280 t6
+ */
+.equ TRAPFRAME, 0xffffffffffffe000
+
+/* uservec: trap entry from user mode (stvec points here, user pt still active) */
 uservec:
-    /* swap user/kernel page tables */
-    csrrw t0, satp, a0
-    sfence.vma
-    
-    /* get trapframe pointer from sscratch */
-    csrr a0, sscratch
-    
-    /* save user registers to trapframe */
+    /* stash user a0 in sscratch, then point a0 at the trapframe */
+    csrw sscratch, a0
+    li a0, TRAPFRAME
+
+    /* save user registers (a0 handled via sscratch below) */
     sd ra, 40(a0)
     sd sp, 48(a0)
     sd gp, 56(a0)
@@ -56,93 +70,92 @@ uservec:
     sd t2, 88(a0)
     sd s0, 96(a0)
     sd s1, 104(a0)
-    sd a0, 112(a0)
-    sd a1, 120(a0)
-    sd a2, 128(a0)
-    sd a3, 136(a0)
-    sd a4, 144(a0)
-    sd a5, 152(a0)
-    sd a6, 160(a0)
-    sd a7, 168(a0)
-    sd s2, 176(a0)
-    sd s3, 184(a0)
-    sd s4, 192(a0)
-    sd s5, 200(a0)
-    sd s6, 208(a0)
-    sd s7, 216(a0)
-    sd s8, 224(a0)
-    sd s9, 232(a0)
-    sd s10, 240(a0)
-    sd s11, 248(a0)
+    sd s2, 112(a0)
+    sd s3, 120(a0)
+    sd s4, 128(a0)
+    sd s5, 136(a0)
+    sd s6, 144(a0)
+    sd s7, 152(a0)
+    sd s8, 160(a0)
+    sd s9, 168(a0)
+    sd s10, 176(a0)
+    sd s11, 184(a0)
+    sd a1, 200(a0)
+    sd a2, 208(a0)
+    sd a3, 216(a0)
+    sd a4, 224(a0)
+    sd a5, 232(a0)
+    sd a6, 240(a0)
+    sd a7, 248(a0)
     sd t3, 256(a0)
     sd t4, 264(a0)
     sd t5, 272(a0)
     sd t6, 280(a0)
-    
-    /* load kernel registers from trapframe */
-    ld sp, 8(a0)      /* kernel_sp */
-    ld tp, 24(a0)     /* kernel_hartid */
-    ld t0, 16(a0)     /* kernel_trap */
-    
-    /* jump to usertrap */
+
+    /* save the user a0 that we parked in sscratch */
+    csrr t0, sscratch
+    sd t0, 192(a0)
+
+    /* load kernel state saved for us by usertrapret */
+    ld sp, 8(a0)       /* kernel_sp */
+    ld tp, 32(a0)      /* kernel_hartid */
+    ld t0, 16(a0)      /* kernel_trap = usertrap */
+    ld t1, 0(a0)       /* kernel_satp */
+
+    /* switch to the kernel page table */
+    csrw satp, t1
+    sfence.vma zero, zero
+
+    /* jump to usertrap (does not return here) */
     jr t0
 
-/* userret: return to user mode */
+/*
+ * userret: return to user mode.
+ * Called by usertrapret as userret(user_satp) with a0 = user satp.
+ * sstatus/sepc are already set by usertrapret.
+ */
 userret:
-    /* get trapframe pointer from sscratch */
-    csrr a0, sscratch
-    
-    /* set up sstatus for user mode */
-    csrr t0, sstatus
-    li t1, ~0x100     /* clear SPP (bit 8) */
-    and t0, t0, t1
-    li t1, 0x20       /* set SPIE (bit 5) */
-    or t0, t0, t1
-    csrw sstatus, t0
-    
-    /* save kernel_satp and epc to temp registers BEFORE restoring a0 */
-    ld t0, 24(a0)     /* epc */
-    csrw sepc, t0
-    ld t1, 0(a0)      /* kernel_satp (full satp value) */
-    
-    /* restore user registers */
+    /* switch to the user page table (a0 = user satp) */
+    csrw satp, a0
+    sfence.vma zero, zero
+
+    /* a0 -> trapframe (fixed VA, mapped in the user page table) */
+    li a0, TRAPFRAME
+
+    /* restore user registers (a0 restored last) */
     ld ra, 40(a0)
     ld sp, 48(a0)
     ld gp, 56(a0)
     ld tp, 64(a0)
-    /* t0, t1 hold epc, satp, need to restore t2 from trapframe */
+    ld t0, 72(a0)
+    ld t1, 80(a0)
     ld t2, 88(a0)
     ld s0, 96(a0)
     ld s1, 104(a0)
-    ld a0, 112(a0)
-    ld a1, 120(a0)
-    ld a2, 128(a0)
-    ld a3, 136(a0)
-    ld a4, 144(a0)
-    ld a5, 152(a0)
-    ld a6, 160(a0)
-    ld a7, 168(a0)
-    ld s2, 176(a0)
-    ld s3, 184(a0)
-    ld s4, 192(a0)
-    ld s5, 200(a0)
-    ld s6, 208(a0)
-    ld s7, 216(a0)
-    ld s8, 224(a0)
-    ld s9, 232(a0)
-    ld s10, 240(a0)
-    ld s11, 248(a0)
+    ld s2, 112(a0)
+    ld s3, 120(a0)
+    ld s4, 128(a0)
+    ld s5, 136(a0)
+    ld s6, 144(a0)
+    ld s7, 152(a0)
+    ld s8, 160(a0)
+    ld s9, 168(a0)
+    ld s10, 176(a0)
+    ld s11, 184(a0)
+    ld a1, 200(a0)
+    ld a2, 208(a0)
+    ld a3, 216(a0)
+    ld a4, 224(a0)
+    ld a5, 232(a0)
+    ld a6, 240(a0)
+    ld a7, 248(a0)
     ld t3, 256(a0)
     ld t4, 264(a0)
     ld t5, 272(a0)
     ld t6, 280(a0)
-    /* restore t0, t1 from saved values */
-    /* t0 already has epc (in sepc), t1 has satp */
-    
-    /* switch to user page table */
-    csrrw t0, satp, t1
-    sfence.vma
-    
+    ld a0, 192(a0)
+
+    /* return to user mode */
     sret
 
 /* kernelvec: trap entry from kernel mode */

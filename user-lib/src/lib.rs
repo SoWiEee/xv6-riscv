@@ -59,7 +59,7 @@ macro_rules! syscall {
             core::arch::asm!(
                 "ecall",
                 in("a7") $num,
-                lateout("a0") ret,
+                lateout("x10") ret,
                 options(nostack)
             );
         }
@@ -71,8 +71,8 @@ macro_rules! syscall {
             core::arch::asm!(
                 "ecall",
                 in("a7") $num,
-                in("a0") $a0,
-                lateout("a0") ret,
+                in("x10") $a0,
+                lateout("x10") ret,
                 options(nostack)
             );
         }
@@ -84,9 +84,9 @@ macro_rules! syscall {
             core::arch::asm!(
                 "ecall",
                 in("a7") $num,
-                in("a0") $a0,
-                in("a1") $a1,
-                lateout("a0") ret,
+                in("x10") $a0,
+                in("x11") $a1,
+                lateout("x10") ret,
                 options(nostack)
             );
         }
@@ -98,10 +98,10 @@ macro_rules! syscall {
             core::arch::asm!(
                 "ecall",
                 in("a7") $num,
-                in("a0") $a0,
-                in("a1") $a1,
-                in("a2") $a2,
-                lateout("a0") ret,
+                in("x10") $a0,
+                in("x11") $a1,
+                in("x12") $a2,
+                lateout("x10") ret,
                 options(nostack)
             );
         }
@@ -113,11 +113,11 @@ macro_rules! syscall {
             core::arch::asm!(
                 "ecall",
                 in("a7") $num,
-                in("a0") $a0,
-                in("a1") $a1,
-                in("a2") $a2,
-                in("a3") $a3,
-                lateout("a0") ret,
+                in("x10") $a0,
+                in("x11") $a1,
+                in("x12") $a2,
+                in("x13") $a3,
+                lateout("x10") ret,
                 options(nostack)
             );
         }
@@ -129,12 +129,12 @@ macro_rules! syscall {
             core::arch::asm!(
                 "ecall",
                 in("a7") $num,
-                in("a0") $a0,
-                in("a1") $a1,
-                in("a2") $a2,
-                in("a3") $a3,
-                in("a4") $a4,
-                lateout("a0") ret,
+                in("x10") $a0,
+                in("x11") $a1,
+                in("x12") $a2,
+                in("x13") $a3,
+                in("x14") $a4,
+                lateout("x10") ret,
                 options(nostack)
             );
         }
@@ -146,13 +146,13 @@ macro_rules! syscall {
             core::arch::asm!(
                 "ecall",
                 in("a7") $num,
-                in("a0") $a0,
-                in("a1") $a1,
-                in("a2") $a2,
-                in("a3") $a3,
-                in("a4") $a4,
-                in("a5") $a5,
-                lateout("a0") ret,
+                in("x10") $a0,
+                in("x11") $a1,
+                in("x12") $a2,
+                in("x13") $a3,
+                in("x14") $a4,
+                in("x15") $a5,
+                lateout("x10") ret,
                 options(nostack)
             );
         }

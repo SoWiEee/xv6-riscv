@@ -10,6 +10,9 @@ _*
 /user/usys.S
 .gdbinit
 TAGS
+.claude/
 .opencode/
 opencode.json
 target/
+.codegraph/
+CLAUDE.md

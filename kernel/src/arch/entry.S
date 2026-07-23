@@ -1,39 +1,16 @@
-/* kernel/src/arch/entry.S - Assembly entry point */
+/* kernel/src/arch/entry.S - Assembly entry point (runs in M-mode) */
 .section .text.entry
 .global _start
 .extern _stack_end
 _start:
-    /* Set up stack pointer */
+    /* Set up a stack (shared for now; per-hart stacks come with SMP support) */
     la sp, _stack_end
-    /* Delegate S-mode exceptions/interrupts to S-mode (must be in M-mode) */
-    li a0, 0xbfff
-    csrw medeleg, a0
-    li a0, 0x222
-    csrw mideleg, a0
-    /* Print 'A' to UART to verify we're running */
+    /* 'M' marks that we reached M-mode entry */
     li a0, 0x10000000
-    li a1, 'A'
+    li a1, 'M'
     sb a1, 0(a0)
-    /* Initialize the allocator */
-    call init_allocator
-    /* Print 'B' after allocator */
-    li a0, 0x10000000
-    li a1, 'B'
-    sb a1, 0(a0)
-    /* Print 'C' before calling Rust init */
-    li a0, 0x10000000
-    li a1, 'C'
-    sb a1, 0(a0)
-    /* Call Rust init */
-    call arch_init_init
-    /* Print 'Z' after init returns (should never happen) */
-    li a0, 0x10000000
-    li a1, 'Z'
-    sb a1, 0(a0)
-
-.section .text
-.global init_allocator
-init_allocator:
-    /* Initialize the linked_list_allocator heap */
-    /* This is a stub - real implementation would set up the heap */
-    ret
+    /* Machine-mode setup, then mret into init() in S-mode. Never returns. */
+    call mstart
+    /* Should never get here */
+1:  wfi
+    j 1b

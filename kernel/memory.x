@@ -14,8 +14,11 @@ SECTIONS
         *(.text.*)
         *(.rodata)
         *(.rodata.*)
+        /* Page-align the text/data boundary so the kernel can map [KERNBASE,
+           etext) read-execute and the rest read-write without a shared page. */
+        . = ALIGN(4096);
     } > KERNEL
-    
+
     etext = .;
     
     .data : {

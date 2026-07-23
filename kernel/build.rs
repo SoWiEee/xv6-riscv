@@ -6,7 +6,13 @@ fn main() {
     println!("cargo:rerun-if-changed=memory.x");
     println!("cargo:rerun-if-changed=src/arch/asm.S");
     println!("cargo:rerun-if-changed=src/arch/entry.S");
-    
+
+    // Link the kernel with its own linker script. This is done here (rather than
+    // globally in .cargo/config.toml) so that user programs, which share the
+    // riscv64imac-unknown-none-elf target, are NOT linked with memory.x.
+    let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+    println!("cargo:rustc-link-arg=-T{}/memory.x", manifest_dir);
+
     let out_dir = env::var("OUT_DIR").unwrap();
     
     // Always use the cross-compiler for kernel assembly files since they contain RISC-V specific instructions

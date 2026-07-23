@@ -9,7 +9,7 @@ pub const VPBITS: usize = 39;
 pub const PPBITS: usize = 56;
 
 // Re-export PTE constants
-pub use super::registers::{PTE_V, PTE_R, PTE_W, PTE_X, PTE_U};
+pub use super::registers::{PTE_V, PTE_R, PTE_W, PTE_X, PTE_U, PTE_A, PTE_D};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(transparent)]

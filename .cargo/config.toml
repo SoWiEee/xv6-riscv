@@ -3,9 +3,13 @@ linker = "riscv64-unknown-elf-gcc"
 rustflags = [
     "-C", "link-arg=-nostdlib",
     "-C", "link-arg=-static",
-    "-C", "link-arg=-Tkernel/memory.x",
     "-C", "panic=abort",
 ]
+# NOTE: the linker script is intentionally NOT set here. Both the kernel and the
+# user programs share this target triple, but they need different scripts, so
+# each crate supplies its own via its build.rs:
+#   - kernel  -> kernel/memory.x   (loaded at 0x80000000)
+#   - user    -> user/user.ld      (loaded at 0x10000, ENTRY(main))
 
 [target.riscv64gc-unknown-linux-gnu]
 linker = "riscv64-unknown-linux-gnu-gcc"

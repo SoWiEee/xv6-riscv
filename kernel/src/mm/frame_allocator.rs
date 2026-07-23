@@ -10,7 +10,11 @@ use buddy_system_allocator::LockedHeap;
 
 /// Kernel heap size (16MB) for global allocator.
 const KERNEL_HEAP_SIZE: usize = 16 * 1024 * 1024;
-static HEAP: [u8; KERNEL_HEAP_SIZE] = [0; KERNEL_HEAP_SIZE];
+/// Backing storage for the global allocator. Must be `static mut` so it lands
+/// in writable .bss rather than read-only .rodata (an immutable `static` array
+/// is placed in .rodata, which is mapped R-X once paging is enabled — writing
+/// to it then faults).
+static mut HEAP: [u8; KERNEL_HEAP_SIZE] = [0; KERNEL_HEAP_SIZE];
 
 #[global_allocator]
 static ALLOCATOR: LockedHeap<32> = LockedHeap::<32>::empty();
@@ -61,7 +65,7 @@ impl FrameAllocator {
         }
         // Initialize global allocator
         unsafe {
-            ALLOCATOR.lock().init(HEAP.as_ptr() as usize, KERNEL_HEAP_SIZE);
+            ALLOCATOR.lock().init(core::ptr::addr_of_mut!(HEAP) as usize, KERNEL_HEAP_SIZE);
         }
     }
     

@@ -188,6 +188,9 @@ pub fn ebreak() {
 }
 
 pub const TRAMPOLINE: usize = usize::MAX - 4096 + 1; // 0xFFFFFFFFFFFFF000
+/// Per-process trapframe, mapped one page below the trampoline in every user
+/// page table. Must match the `.equ TRAPFRAME` constant in arch/asm.S.
+pub const TRAPFRAME: usize = TRAMPOLINE - 4096; // 0xFFFFFFFFFFFFE000
 pub const KERNBASE: usize = 0x80000000;
 pub const PHYSTOP: usize = KERNBASE + 128 * 1024 * 1024;
 pub const UART0: usize = 0x10000000;
@@ -195,7 +198,9 @@ pub const VIRTIO0: usize = 0x10001000;
 pub const PLIC: usize = 0x0C000000;
 
 pub const fn make_satp(ppn: usize) -> usize {
-    (8 << 60) | (ppn << 12) // Sv39 mode
+    // Sv39: MODE(8) in bits [63:60], PPN in bits [43:0]. `ppn` is already a
+    // physical page number (physaddr >> 12), so it goes in directly.
+    (8 << 60) | ppn
 }
 
 pub const SSTATUS_SPP: usize = 1 << 8;
