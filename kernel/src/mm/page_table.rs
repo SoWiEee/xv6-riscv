@@ -8,6 +8,7 @@ use super::address::{PhysAddr, PhysPageNum, VirtAddr};
 use super::frame_allocator::{alloc_page, free_page};
 use crate::arch::paging::{PageTableEntry, PageTableWalker, PAGE_SIZE, PTE_V, PTE_R, PTE_W, PTE_X, PTE_U};
 use crate::arch::asm::sfence_vma;
+use alloc::boxed::Box;
 
 /// A Sv39 page table.
 /// 
@@ -141,12 +142,17 @@ impl PageTable {
 
 use spin::Once;
 
-/// Global kernel page table (initialized once).
-pub static KERNEL_PAGETABLE: Once<PageTable> = Once::new();
+use core::sync::atomic::{AtomicPtr, Ordering};
+
+/// Global kernel page table pointer (initialized once).
+pub static mut KERNEL_PAGETABLE_PTR: *mut PageTable = core::ptr::null_mut();
 
 /// Get the kernel page table root PPN for `satp`.
 pub fn kernel_pagetable() -> PhysPageNum {
-    KERNEL_PAGETABLE.get().unwrap().root_ppn()
+    let ptr = unsafe { KERNEL_PAGETABLE_PTR };
+    crate::arch::console::printk(format_args!("kernel_pagetable: ptr={:#x}\n", ptr as usize));
+    assert!(!ptr.is_null(), "kernel_pagetable not initialized");
+    unsafe { (*ptr).root_ppn() }
 }
 
 /// Initialize the kernel page table.
@@ -154,9 +160,15 @@ pub fn kernel_pagetable() -> PhysPageNum {
 /// Maps: UART, Virtio, PLIC, kernel text (RX), kernel data (RW),
 /// trampoline page, and kernel stacks.
 pub fn kvminit() {
-    let mut pt = PageTable::new().expect("kvminit: failed to create kernel page table");
+    crate::arch::console::printk(format_args!("kvminit: start\n"));
+    let mut pt = Box::new(PageTable::new().expect("kvminit: failed to create kernel page table"));
     map_kernel(&mut pt);
-    KERNEL_PAGETABLE.call_once(|| pt);
+    let ptr = Box::into_raw(pt);
+    crate::arch::console::printk(format_args!("kvminit: ptr={:#x}\n", ptr as usize));
+    unsafe { KERNEL_PAGETABLE_PTR = ptr; }
+    let loaded = unsafe { KERNEL_PAGETABLE_PTR };
+    crate::arch::console::printk(format_args!("kvminit: loaded={:#x}\n", loaded as usize));
+    crate::arch::console::printk(format_args!("kvminit: done\n"));
 }
 
 fn map_kernel(pt: &mut PageTable) {
@@ -220,7 +232,12 @@ fn map_kernel(pt: &mut PageTable) {
 
 /// Activate the kernel page table on the current hart.
 pub fn kvminithart() {
-    KERNEL_PAGETABLE.get().unwrap().activate();
+    crate::arch::console::printk(format_args!("kvminithart: start\n"));
+    let ptr = unsafe { KERNEL_PAGETABLE_PTR };
+    crate::arch::console::printk(format_args!("kvminithart: ptr={:#x}\n", ptr as usize));
+    assert!(!ptr.is_null(), "kernel_pagetable not initialized");
+    unsafe { (*ptr).activate(); }
+    crate::arch::console::printk(format_args!("kvminithart: done\n"));
 }
 
 /// Create a new user page table with trampoline mapped.

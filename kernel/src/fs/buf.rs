@@ -10,7 +10,7 @@ use crate::drivers::virtio::virtio_rw;
 use crate::sync::spinlock::SpinLock;
 use crate::sync::sleeplock::SleepLock;
 use crate::sync::condvar::Condvar;
-use crate::proc::{sleep, wakeup};
+use crate::proc::{sleep, wakeup, started};
 
 /// Block size in bytes (1024 = 2 virtio sectors).
 pub const BSIZE: usize = 1024;
@@ -129,6 +129,10 @@ const NBUF: usize = 30; // MAXOPBLOCKS * 3 = 10 * 3 = 30
 /// Global buffer cache.
 pub static BUF_CACHE: SpinLock<BufCache> = SpinLock::new(BufCache::new(), "bcache");
 
+pub fn bcache_addr() -> usize {
+    &raw const BUF_CACHE as usize
+}
+
 /// Buffer cache with LRU replacement policy.
 struct BufCache {
     buffers: [Option<Buf>; NBUF],
@@ -201,23 +205,32 @@ impl BufCache {
 
 /// Initialize the buffer cache.
 pub fn binit() {
+    let sp: usize;
+    unsafe { core::arch::asm!("mv {}, sp", out(reg) sp) };
+    crate::arch::console::printk(format_args!("binit: start sp={:#x}\n", sp));
     let mut cache = BUF_CACHE.acquire();
     for i in 0..NBUF {
+        crate::arch::console::printk(format_args!("binit: i={}, before ptr={:#x}\n", i, unsafe { crate::mm::page_table::KERNEL_PAGETABLE_PTR } as usize));
         cache.buffers[i] = Some(Buf::new(0, 0));
+        crate::arch::console::printk(format_args!("binit: i={}, after ptr={:#x}\n", i, unsafe { crate::mm::page_table::KERNEL_PAGETABLE_PTR } as usize));
     }
     // Initialize LRU with all buffers
     for i in 0..NBUF {
         cache.add_to_head(i);
     }
+    crate::arch::console::printk(format_args!("binit: done, head={:?}, tail={:?}\n", cache.head, cache.tail));
 }
 
 /// Get a buffer for a disk block, allocating or evicting as needed.
 /// 
 /// Returns a `BufRef` that can be locked to access the data.
 fn bget(dev: u32, blockno: u32) -> BufRef {
+    crate::arch::console::printk(format_args!("bget: ENTER dev={} blockno={} started={}\n", dev, blockno, crate::proc::started()));
+    crate::arch::console::printk(format_args!("bget: before acquire\n"));
+    let mut cache = BUF_CACHE.acquire();
+    crate::arch::console::printk(format_args!("bget: after acquire\n"));
+    
     loop {
-        let mut cache = BUF_CACHE.acquire();
-        
         // Search for existing buffer
         let mut found_idx = None;
         for i in 0..NBUF {
@@ -241,6 +254,7 @@ fn bget(dev: u32, blockno: u32) -> BufRef {
         if let Some(lru_idx) = lru_idx {
             if let Some(buf) = &cache.buffers[lru_idx] {
                 let mut guard = buf.lock();
+                crate::arch::console::printk(format_args!("bget: lru_idx={} refcnt={} valid={}\n", lru_idx, guard.refcnt(), guard.valid()));
                 if guard.refcnt() == 0 {
                     // Reuse this buffer
                     let idx = lru_idx;
@@ -255,8 +269,13 @@ fn bget(dev: u32, blockno: u32) -> BufRef {
             }
         }
         
-        // All buffers busy - sleep and retry
-        cache.wait_cond.sleep(&BUF_CACHE);
+        // All buffers busy - sleep and retry (but not before scheduler starts)
+        crate::arch::console::printk(format_args!("bget: all busy, started={}\n", crate::proc::started()));
+        if crate::proc::started() {
+            cache.wait_cond.sleep(&BUF_CACHE);
+        } else {
+            core::hint::spin_loop();
+        }
     }
 }
 

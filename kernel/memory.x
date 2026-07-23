@@ -38,7 +38,7 @@ SECTIONS
     .stack (NOLOAD) : {
         . = ALIGN(16);
         _stack_start = .;
-        . += 4096;
+        . += 16384;
         _stack_end = .;
     } > KERNEL
     

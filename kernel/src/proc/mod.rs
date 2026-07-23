@@ -49,8 +49,14 @@ pub fn current_process_opt() -> Option<&'static Proc> {
     mycpu().proc
 }
 
+static mut SCHEDULER_STARTED: bool = false;
+
 pub fn started() -> bool {
-    unsafe { crate::proc::scheduler::SCHEDULER_STARTED }
+    unsafe { SCHEDULER_STARTED }
+}
+
+pub fn set_scheduler_started() {
+    unsafe { SCHEDULER_STARTED = true; }
 }
 
 pub fn tick() {

@@ -41,16 +41,36 @@ pub extern "C" fn init() -> ! {
         
         // Initialize kernel page table
         kvminit();
+        crate::arch::console::printk(format_args!("after kvminit, before kvminithart\n"));
         kvminithart();
         
         procinit();
+        crate::arch::console::printk(format_args!("before trapinit\n"));
         trapinit();
-        plic_init();
-        plic_init_hart();
+        crate::arch::console::printk(format_args!("after trapinit\n"));
+        crate::arch::console::printk(format_args!("before plic_init\n"));
+plic_init();
+        crate::arch::console::printk(format_args!("after plic_init\n"));
+        crate::arch::console::printk(format_args!("before virtio_init\n"));
         crate::drivers::virtio::virtio_init();
+        crate::arch::console::printk(format_args!("after virtio_init\n"));
+        crate::arch::console::printk(format_args!("virtio init done\n"));
+        crate::arch::console::printk(format_args!("calling binit...\n"));
+        crate::arch::console::printk(format_args!("before binit ptr={:#x}\n", unsafe { crate::mm::page_table::KERNEL_PAGETABLE_PTR } as usize));
+        crate::arch::console::printk(format_args!("KERNEL_PAGETABLE_PTR addr={:#x}\n", &raw const crate::mm::page_table::KERNEL_PAGETABLE_PTR as usize));
+        crate::arch::console::printk(format_args!("BUF_CACHE addr={:#x}\n", crate::fs::buf::bcache_addr()));
+        crate::fs::binit();
+        crate::arch::console::printk(format_args!("after binit ptr={:#x}\n", unsafe { crate::mm::page_table::KERNEL_PAGETABLE_PTR } as usize));
+        crate::arch::console::printk(format_args!("binit done\n"));
+        crate::arch::console::printk(format_args!("calling iinit...\n"));
         crate::fs::iinit();
+        crate::arch::console::printk(format_args!("iinit done\n"));
+        crate::arch::console::printk(format_args!("calling fileinit...\n"));
         crate::fs::fileinit();
+        crate::arch::console::printk(format_args!("fileinit done\n"));
+        crate::arch::console::printk(format_args!("calling userinit...\n"));
         crate::proc::userinit();
+        crate::arch::console::printk(format_args!("userinit done\n"));
         
         // Signal other harts
         STARTED.store(true, Ordering::SeqCst);

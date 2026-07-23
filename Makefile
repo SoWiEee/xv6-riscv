@@ -146,10 +146,6 @@ UPROGS=\
 	$U/_forphan\
 	$U/_dorphan\
 	$U/_sync\
-	$U/_test_lazy\
-	$U/_test_leak\
-	$U/_test_leak2\
-	$U/_test_leak3\
 	$U/_test_leak_poc\
 
 fs.img: mkfs/mkfs README $(UPROGS)

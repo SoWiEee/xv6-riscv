@@ -41,6 +41,7 @@ pub fn devintr() -> u32 {
     let scause = r_scause();
     if scause == 0x8000000000000009 { // Supervisor external interrupt
         let irq = plic_claim();
+        crate::arch::console::printk(format_args!("devintr: irq={}\n", irq));
         match irq {
             UART0_IRQ => crate::drivers::uart::uart_intr(),
             VIRTIO0_IRQ => crate::drivers::virtio::virtio_intr(),

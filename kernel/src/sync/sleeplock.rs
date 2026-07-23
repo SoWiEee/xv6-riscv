@@ -1,6 +1,6 @@
 // kernel/src/sync/sleeplock.rs
 use crate::sync::spinlock::SpinLock;
-use crate::proc::{sleep, wakeup, current_process};
+use crate::proc::{sleep, wakeup, current_process, current_process_opt, started};
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
 
@@ -26,21 +26,36 @@ impl<T> SleepLock<T> {
     }
     
     pub fn acquire(&self) -> SleepLockGuard<'_, T> {
-        let p = current_process();
-        loop {
-            // Acquire the internal guard lock
-            let guard = self.guard_lock.acquire();
-            if !unsafe { *self.locked.get() } {
-                unsafe { *self.locked.get() = true; }
-                unsafe { *self.pid.get() = p.pid(); }
+        if crate::proc::started() {
+            let p = current_process();
+            loop {
+                // Acquire the internal guard lock
+                let guard = self.guard_lock.acquire();
+                if !unsafe { *self.locked.get() } {
+                    unsafe { *self.locked.get() = true; }
+                    unsafe { *self.pid.get() = p.pid(); }
+                    drop(guard);
+                    return SleepLockGuard { lock: self };
+                }
+                // Release the guard lock and sleep on this sleeplock's address
                 drop(guard);
-                return SleepLockGuard { lock: self };
+                // Sleep on this sleeplock's address as the channel
+                sleep(self as *const _ as usize, &self.guard_lock);
+                // After wakeup, loop will re-acquire the guard lock
             }
-            // Release the guard lock and sleep on this sleeplock's address
-            drop(guard);
-            // Sleep on this sleeplock's address as the channel
-            sleep(self as *const _ as usize, &self.guard_lock);
-            // After wakeup, loop will re-acquire the guard lock
+        } else {
+            // Before scheduler starts: spin without sleeping
+            loop {
+                let guard = self.guard_lock.acquire();
+                if !unsafe { *self.locked.get() } {
+                    unsafe { *self.locked.get() = true; }
+                    unsafe { *self.pid.get() = 0; }
+                    drop(guard);
+                    return SleepLockGuard { lock: self };
+                }
+                drop(guard);
+                core::hint::spin_loop();
+            }
         }
     }
     
