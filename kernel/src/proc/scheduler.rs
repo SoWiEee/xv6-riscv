@@ -96,7 +96,7 @@ pub fn scheduler() -> ! {
             if inner.state == ProcState::Runnable {
                 inner.state = ProcState::Running;
                 
-                // Set current process for this CPU
+                // Set current process for this CPU while holding lock
                 let cpu = crate::proc::mycpu();
                 cpu.proc = Some(p);
                 
@@ -106,15 +106,19 @@ pub fn scheduler() -> ! {
                     w_satp(satp);
                 }
                 
+                // Save context pointer before dropping lock
+                let ctx_ptr = &mut inner.context as *mut _;
+                
                 drop(inner);
                 
                 // Context switch to the process
                 crate::arch::trap::context_switch(
                     &mut cpu.context,
-                    &p.lock().context
+                    unsafe { &mut *ctx_ptr }
                 );
                 
                 // After returning, we're back in kernel
+                let cpu = crate::proc::mycpu();
                 cpu.proc = None;
                 w_satp(kernel_pagetable().0);
             }
