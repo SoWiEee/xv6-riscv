@@ -2,6 +2,7 @@
 use crate::fs::inode::Inode;
 use crate::fs::pipe::Pipe;
 use crate::sync::spinlock::{SpinLock, SpinLockGuard};
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -13,7 +14,7 @@ pub enum FileType {
 }
 
 pub struct File {
-    lock: SpinLock<FileInner>,
+    inner: Arc<SpinLock<FileInner>>,
 }
 
 pub struct FileInner {
@@ -28,53 +29,51 @@ pub struct FileInner {
 }
 
 impl File {
+    fn new_with_inner(inner: Arc<SpinLock<FileInner>>) -> Self {
+        Self { inner }
+    }
+    
     pub fn new_inode(inode: &'static Inode, readable: bool, writable: bool) -> Self {
-        Self {
-            lock: SpinLock::new(FileInner {
-                typ: FileType::Inode,
-                refcnt: 1,
-                readable,
-                writable,
-                pipe: None,
-                inode: Some(inode),
-                off: 0,
-                major: 0,
-            }, "file"),
-        }
+        Self::new_with_inner(Arc::new(SpinLock::new(FileInner {
+            typ: FileType::Inode,
+            refcnt: 1,
+            readable,
+            writable,
+            pipe: None,
+            inode: Some(inode),
+            off: 0,
+            major: 0,
+        }, "file")))
     }
     
     pub fn new_pipe(pipe: Pipe, readable: bool, writable: bool) -> Self {
-        Self {
-            lock: SpinLock::new(FileInner {
-                typ: FileType::Pipe,
-                refcnt: 1,
-                readable,
-                writable,
-                pipe: Some(pipe),
-                inode: None,
-                off: 0,
-                major: 0,
-            }, "file"),
-        }
+        Self::new_with_inner(Arc::new(SpinLock::new(FileInner {
+            typ: FileType::Pipe,
+            refcnt: 1,
+            readable,
+            writable,
+            pipe: Some(pipe),
+            inode: None,
+            off: 0,
+            major: 0,
+        }, "file")))
     }
     
     pub fn new_device(major: u16, readable: bool, writable: bool) -> Self {
-        Self {
-            lock: SpinLock::new(FileInner {
-                typ: FileType::Device,
-                refcnt: 1,
-                readable,
-                writable,
-                pipe: None,
-                inode: None,
-                off: 0,
-                major,
-            }, "file"),
-        }
+        Self::new_with_inner(Arc::new(SpinLock::new(FileInner {
+            typ: FileType::Device,
+            refcnt: 1,
+            readable,
+            writable,
+            pipe: None,
+            inode: None,
+            off: 0,
+            major,
+        }, "file")))
     }
     
     pub fn inner(&self) -> SpinLockGuard<FileInner> {
-        self.lock.acquire()
+        self.inner.acquire()
     }
     
     pub fn typ(&self) -> FileType {
@@ -147,32 +146,20 @@ pub fn filealloc() -> Option<File> {
     let mut ftable = FILE_TABLE.acquire();
     for i in 0..NFILE {
         if ftable.files[i].is_none() {
-            let file = File {
-                lock: SpinLock::new(FileInner {
-                    typ: FileType::None,
-                    refcnt: 1,
-                    readable: false,
-                    writable: false,
-                    pipe: None,
-                    inode: None,
-                    off: 0,
-                    major: 0,
-                }, "file"),
-            };
+            let inner = Arc::new(SpinLock::new(FileInner {
+                typ: FileType::None,
+                refcnt: 1,
+                readable: false,
+                writable: false,
+                pipe: None,
+                inode: None,
+                off: 0,
+                major: 0,
+            }, "file"));
+            
+            let file = File::new_with_inner(Arc::clone(&inner));
             ftable.files[i] = Some(file);
-            // Return a copy by creating a new one with same data
-            return Some(File {
-                lock: SpinLock::new(FileInner {
-                    typ: FileType::None,
-                    refcnt: 1,
-                    readable: false,
-                    writable: false,
-                    pipe: None,
-                    inode: None,
-                    off: 0,
-                    major: 0,
-                }, "file"),
-            });
+            return Some(File::new_with_inner(inner));
         }
     }
     None
@@ -218,37 +205,7 @@ pub fn fileclose(f: &File) {
 
 pub fn filedup(f: &File) -> File {
     f.inc_ref();
-    // Create a new File struct that wraps the same underlying data
-    // This is a simplified version - in reality we'd use Arc or similar
-    let inner = f.inner();
-    let typ = inner.typ;
-    let readable = inner.readable;
-    let writable = inner.writable;
-    let pipe = inner.pipe.clone();
-    let inode = inner.inode;
-    let off = inner.off;
-    let major = inner.major;
-    drop(inner);
-    
-    match typ {
-        FileType::Pipe => File::new_pipe(pipe.unwrap(), readable, writable),
-        FileType::Inode => File::new_inode(inode.unwrap(), readable, writable),
-        FileType::Device => File::new_device(major, readable, writable),
-        FileType::None => {
-            File {
-                lock: SpinLock::new(FileInner {
-                    typ: FileType::None,
-                    refcnt: 1,
-                    readable: false,
-                    writable: false,
-                    pipe: None,
-                    inode: None,
-                    off: 0,
-                    major: 0,
-                }, "file"),
-            }
-        }
-    }
+    File::new_with_inner(Arc::clone(&f.inner))
 }
 
 pub fn fileread(f: &File, dst: &mut [u8]) -> usize {
