@@ -1020,18 +1020,39 @@ fn sys_unlink(path: usize) -> isize {
         return -1;
     }
     
-    // Decrement link count
-    inode.dec_nlink();
     inode.unlock();
-    
-    // Remove directory entry
-    // This is a simplified version - in reality we'd need to zero out the dirent
-    // For now, we just decrement nlink and let iput handle cleanup when it hits 0
-    
+
+    // Remove the entry from the parent directory by zeroing its Dirent, so the
+    // name disappears from listings (matches xv6's writei of a zeroed dirent).
+    let entry_size = core::mem::size_of::<crate::fs::inode::Dirent>();
+    let psize = parent.size() as usize;
+    let mut off = 0;
+    while off < psize {
+        let mut de = crate::fs::inode::Dirent::new();
+        parent.read(&mut de.as_bytes_mut()[..entry_size], off, entry_size);
+        if de.inum != 0 {
+            if let Ok(s) = core::str::from_utf8(&de.name) {
+                if s.trim_end_matches('\0') == name {
+                    let zero = crate::fs::inode::Dirent::new();
+                    parent.write(&zero.as_bytes()[..entry_size], off, entry_size);
+                    break;
+                }
+            }
+        }
+        off += entry_size;
+    }
+
+    // Drop a link and persist the inode; iput reclaims it once the last link
+    // and in-memory reference are gone.
+    inode.lock();
+    inode.dec_nlink();
+    iupdate(inode);
+    inode.unlock();
+
     crate::fs::iput(inode);
     parent.unlock();
     crate::fs::iput(parent);
-    
+
     0
 }
 
