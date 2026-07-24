@@ -1,548 +1,130 @@
-# xv6-riscv Rust Architecture
+# xv6-riscv Rust Port Architecture
 
-This document provides a comprehensive overview of the xv6-riscv Rust kernel architecture.
+## Scope and status
 
-## Table of Contents
+This repository contains two implementations of the xv6-riscv teaching operating system:
 
-1. [High-Level Structure](#high-level-structure)
-2. [Memory Management](#memory-management)
-3. [Process Management](#process-management)
-4. [File System](#file-system)
-5. [Synchronization](#synchronization)
-6. [Trap Handling](#trap-handling)
-7. [Device Drivers](#device-drivers)
-8. [System Calls](#system-calls)
-9. [User Space](#user-space)
-10. [Build System](#build-system)
+- the original C xv6 reference implementation in `kernel/` and `user/`; and
+- an in-progress Rust migration in `kernel/src/`, `user/src/`, and `user-lib/src/`.
 
----
+The Rust tree follows xv6 subsystem boundaries and ABI conventions where the source implements them. It is not a documented completed replacement, and this document does not claim binary or disk compatibility, test-suite success, or performance equivalence. The C tree remains the behavioural reference and is also the system built by the root `Makefile`.
 
-## High-Level Structure
+The status labels below are statements about checked-in source, not feature-parity guarantees:
 
-```
-xv6-rust/
-├── kernel/                 # Kernel crate (no_std)
-│   ├── src/
-│   │   ├── arch/           # RISC-V architecture specifics
-│   │   ├── mm/             # Memory management
-│   │   ├── fs/             # File system
-│   │   ├── proc/           # Process management
-│   │   ├── sync/           # Synchronization primitives
-│   │   ├── drivers/        # Device drivers
-│   │   ├── syscall/        # System call handling
-│   │   ├── trap/           # Trap handling
-│   │   └── lib.rs          # Crate root
-│   ├── Cargo.toml
-│   └── memory.x            # Linker script for memory layout
-├── user/                   # User-space programs (std)
-├── user-lib/               # Shared user library
-├── xtask/                  # Build automation
-└── Cargo.toml              # Workspace root
-```
+- **Ported structure**: a Rust module and its principal C xv6 counterpart are present.
+- **Implemented path**: the named runtime path exists in the Rust source.
+- **Migration limitation**: completeness or compatibility requires further implementation or validation.
 
-### Key Design Principles
+## Repository layout and source correspondence
 
-1. **Memory Safety Without Compromise**: All unsafe code is isolated in `arch/`, `mm/frame_allocator`, and `sync/`. Safe abstractions use Rust's type system to prevent bugs.
+| Responsibility | Rust migration | C xv6 reference |
+| --- | --- | --- |
+| Kernel entry, CPU setup, traps | `kernel/src/arch/` | `kernel/entry.S`, `kernel/start.c`, `kernel/trap.c`, `kernel/trampoline.S` |
+| Virtual memory and allocation | `kernel/src/mm/` | `kernel/vm.c`, `kernel/kalloc.c` |
+| Processes and scheduling | `kernel/src/proc/` | `kernel/proc.c`, `kernel/swtch.S` |
+| File system and descriptors | `kernel/src/fs/` | `kernel/bio.c`, `kernel/fs.c`, `kernel/log.c`, `kernel/file.c`, `kernel/pipe.c` |
+| Devices and interrupts | `kernel/src/drivers/`, `arch/interrupt.rs` | `kernel/console.c`, `kernel/uart.c`, `kernel/virtio_disk.c`, `kernel/plic.c` |
+| System calls | `kernel/src/proc/syscall.rs` | `kernel/syscall.c`, `kernel/sysproc.c`, `kernel/sysfile.c` |
+| ELF loading | `kernel/src/elf.rs` | `kernel/exec.c` |
+| User runtime and programs | `user-lib/src/`, `user/src/bin/` | `user/ulib.c`, `usys.pl`, `user/*.c` |
+| Image construction | Rust build scripts plus `mkfs/` | root `Makefile` plus `mkfs/` |
 
-2. **Typed Addresses**: `PhysAddr`, `VirtAddr`, `PhysPageNum`, `VirtPageNum` newtypes prevent accidental mixing of address spaces.
+`kernel/src/lib.rs` exports the Rust kernel's `arch`, `mm`, `sync`, `proc`, `fs`, `drivers`, `syscall`, `trap`, and `elf` modules. The Cargo workspace has three members: `kernel`, `user`, and `user-lib`.
 
-3. **RAII Resource Management**: `PageTable` owns mappings and frees pages on drop. `SpinLockGuard` releases locks automatically.
+## Boot and privilege transitions
 
-4. **Capability-Based Access**: `UserBuffer` for `copyin`/`copyout` with bounds checking.
+**Ported structure:** `kernel/src/arch/entry.S`, `asm.S`, `init.rs`, `asm.rs`, and `trap.rs` correspond to C xv6's `entry.S`, `start.c`, `trap.c`, and `trampoline.S`. `asm.S` implements the `uservec`, `userret`, and `kernelvec` assembly entry points; `asm.rs` provides CSR and address helpers used by Rust code.
 
----
+**Implemented path:** the entry assembly reaches `mstart()`, which configures machine-mode state, delegates exceptions and interrupts to supervisor mode, enables supervisor timer support, stores the hart ID in `tp`, and uses `mret` to enter `init()`. Hart 0 initializes the console, frame allocator, kernel page table, process table, traps, PLIC, VirtIO device, and file-system caches before creating the first user process. Other harts wait for this initialization, then set up their page tables, traps, and PLIC state.
 
-## Memory Management
+`kernel/src/elf.rs` embeds `user/_init` with `include_bytes!`. Thus the first user process runs the copy embedded in the kernel image rather than the copy in `fs.img`; changing Rust `init` requires rebuilding the user binary before rebuilding the kernel.
 
-### Physical Memory Layout (`memory.x`)
+**Migration limitation:** the README's development command boots one hart while SMP bring-up is in progress. Multi-hart correctness must be validated separately.
 
-```
-MEMORY
-{
-  KERNEL : ORIGIN = 0x80000000, LENGTH = 128M
-  USER   : ORIGIN = 0x00000000, LENGTH = 2G   (virtual, per-process)
-}
-```
+## Memory and address spaces
 
-- Kernel loaded at `0x80000000` (physical and virtual identity-mapped)
-- User space: 2GB virtual address space per process
-- Trampoline page at `0xFFFFFFFFFFFFF000` (highest virtual page)
+**Ported structure:** `kernel/src/mm/` and `kernel/src/arch/paging.rs` map to C xv6's `vm.c` and `kalloc.c`.
 
-### Page Table (Sv39)
+- `mm/address.rs` defines typed physical and virtual addresses and page numbers: `PhysAddr`, `VirtAddr`, `PhysPageNum`, and `VirtPageNum`.
+- `mm/frame_allocator.rs` provides the physical frame allocator and its `kinit`, `kalloc`, and `kfree` entry points.
+- `mm/page_table.rs` implements Sv39 three-level page tables with 4 KiB pages, kernel mappings, user allocation/copy/free helpers, and a trampoline mapping.
+- `mm/heap.rs` initializes a Rust kernel heap; `mm/page_fault.rs` contains a page-fault entry point.
 
-- **Page size**: 4096 bytes
-- **Levels**: 3 (L2, L1, L0), 512 entries each
-- **PTE format** (64-bit):
-  - Bit 0: V (Valid)
-  - Bit 1: R (Read)
-  - Bit 2: W (Write)
-  - Bit 3: X (Execute)
-  - Bit 4: U (User)
-  - Bit 5: G (Global)
-  - Bit 6: A (Accessed)
-  - Bit 7: D (Dirty)
-  - Bits 10-53: PPN (Physical Page Number)
+`kernel/memory.x` defines a 128 MiB kernel memory region at `0x80000000`. User layout is established by page-table code, not by a separate `USER` linker-memory region. The trampoline is at `0xFFFF_FFFF_FFFF_F000`, with the trap-frame page directly below it, as defined in `arch/asm.rs`.
 
-### Key Modules
+`PageTable` distinguishes owning trees from non-owning views created by `Clone` or `from_root`. Only an owning handle frees the tree. The teardown code clears trampoline and trap-frame mappings without freeing their backing pages.
 
-#### `mm/address.rs`
-Type-safe address wrappers:
-```rust
-pub struct PhysAddr(pub usize);
-pub struct VirtAddr(pub usize);
-pub struct PhysPageNum(pub usize);
-pub struct VirtPageNum(pub usize);
+**Migration limitation:** Rust code still uses raw pointers and `unsafe` at hardware, assembly, page-table, and shared-kernel boundaries. Rust types help document some boundaries, but no blanket memory-safety claim follows.
+
+## Processes, scheduling, and synchronization
+
+**Ported structure:** `kernel/src/proc/` and `kernel/src/sync/` correspond to the process, scheduler, context-switch, spinlock, and sleeplock portions of C xv6's `proc.c`, `swtch.S`, `spinlock.c`, and `sleeplock.c`.
+
+`Proc` contains a `SpinLock<ProcInner>`. `ProcInner` stores the xv6-style process state, PID, parent pointer, user page table, trap frame, kernel context, file descriptors, current working directory, exit state, and memory size. Its state model is:
+
+```text
+Unused → Used → Runnable → Running → Sleeping → Runnable → … → Zombie → Unused
 ```
 
-#### `mm/frame_allocator.rs`
-Physical page allocator (bitmap-based):
-- `alloc_page() -> Option<PhysPageNum>`
-- `free_page(ppn: PhysPageNum)`
-- `kinit(start: PhysAddr, end: PhysAddr)` - initialize from linker script
-
-#### `mm/page_table.rs`
-Page table management:
-- `PageTable::new()` - create empty page table
-- `map(va: VirtAddr, pa: PhysAddr, flags: PteFlags)` - map page
-- `unmap(va: VirtAddr)` - unmap page
-- `translate(va: VirtAddr) -> Option<PhysAddr>` - walk page table
-- `kernel_pagetable()` - global kernel page table
-
-#### `mm/heap.rs`
-Kernel heap allocator using `linked_list_allocator`:
-- Global allocator for `alloc` crate
-- Initialized after frame allocator
-
----
-
-## Process Management
-
-### Process Structure (`proc/process.rs`)
-
-```rust
-pub enum ProcState {
-    Unused,
-    Used,
-    Sleeping,
-    Runnable,
-    Running,
-    Zombie,
-}
-
-pub struct Proc {
-    inner: SpinLock<ProcInner>,
-    // ...
-}
-
-pub struct ProcInner {
-    pub pid: usize,
-    pub state: ProcState,
-    pub pagetable: Option<PageTable>,
-    pub trapframe: *mut TrapFrame,
-    pub context: Context,
-    pub kstack: usize,
-    pub name: [u8; 16],
-    pub cwd: Option<Arc<Inode>>,
-    pub ofile: [Option<Arc<File>>; NOFILE],
-    pub killed: bool,
-    pub xstate: i32,
-    pub chan: usize,        // wait channel
-    // ...
-}
-```
-
-### Scheduler (`proc/scheduler.rs`)
-
-Simple round-robin scheduler:
-- `alloc_proc() -> Option<Arc<Proc>>` - allocate new process
-- `sched()` - context switch to scheduler
-- `yield_now()` - yield current process
-- `wakeup(chan)` / `sleep(chan, lock)` - wait queues
-
-### Process Lifecycle
-
-```
-Unused -> Used -> Runnable -> Running -> Sleeping -> Runnable -> ... -> Zombie -> Unused
-```
-
-- `userinit()`: Creates first `init` process (PID 1)
-- `fork()`: Copies parent's page table (COW not implemented yet)
-- `exec()`: Loads ELF binary, replaces page table
-- `exit()`: Sets state to Zombie, wakes parent
-- `wait()`: Reaps zombie child
-
-### Trap Frame (`proc/trapframe.rs`)
-
-```rust
-#[repr(C, align(16))]
-pub struct TrapFrame {
-    pub kernel_satp: usize,   // kernel page table
-    pub kernel_sp: usize,     // kernel stack pointer
-    pub kernel_trap: usize,   // usertrap function
-    pub epc: usize,           // user PC
-    pub sp: usize,            // user SP
-    pub ra: usize,            // user RA
-    pub gp: usize,            // user GP
-    pub tp: usize,            // user TP
-    pub t0: usize,            // registers...
-    // ... all 32 general-purpose registers
-}
-```
-
----
-
-## File System
-
-### On-Disk Layout (same as C xv6)
-
-```
-Block 0:    Boot block
-Block 1:    Superblock
-Blocks 2-31: Log
-Blocks 32-: Inodes
-            Data blocks
-```
-
-### Key Structures
-
-#### `fs/buf.rs` - Buffer Cache
-- `Buf` - cached disk block with mutex
-- `BUF_CACHE` - global LRU cache of `Arc<Mutex<Buf>>`
-- `bread(dev, blockno) -> BufGuard` - read block
-- `bwrite(guard)` - write block
-- `bpin/bunpin` - reference counting for log
-
-#### `fs/inode.rs` - Inode Layer
-- `Inode` - in-memory inode with `Arc` reference counting
-- `DiskInode` - on-disk inode structure
-- `namei(path) -> Result<Arc<Inode>>` - path lookup
-- `ialloc(dev, type) -> u32` - allocate inode
-- `iget(dev, inum) -> Arc<Inode>` - get inode (with refcount)
-- `iput(inode)` - release reference
-
-#### `fs/log.rs` - Write-Ahead Logging
-- Transaction API: `begin_op()`, `end_op()`
-- `recover_from_log()` - replay on boot
-- Log blocks store modified blocks before commit
-
-#### `fs/file.rs` - File Descriptor Layer
-- `File` - open file description (refcounted)
-- `filealloc() -> Option<Arc<File>>`
-- `fileread/filestat/filewrite` - operations
-
-#### `fs/pipe.rs` - Pipes
-- `Pipe` - pair of `File` (read/write ends)
-- `pipealloc() -> (Arc<File>, Arc<File>)`
-
----
-
-## Synchronization
-
-### Primitives (`sync/`)
-
-#### `spinlock.rs` - SpinLock
-```rust
-pub struct SpinLock<T> {
-    locked: AtomicBool,
-    name: &'static str,
-    cpu: Option<usize>,  // for debugging
-}
-
-pub struct SpinLockGuard<'a, T> { /* implements Deref, DerefMut */ }
-```
-- Disables interrupts on acquire (IRQ-safe)
-- Guard pattern ensures automatic release
-
-#### `sleeplock.rs` - SleepLock
-```rust
-pub struct SleepLock<T> {
-    locked: AtomicBool,
-    condvar: Condvar,
-}
-```
-- For long-held locks (e.g., inode locks)
-- Uses `Condvar` for sleeping
-
-#### `condvar.rs` - Condition Variables
-```rust
-pub struct Condvar {
-    wait_queue: SpinLock<Vec<usize>>,  // process pointers
-}
-```
-- `sleep(lock)` - atomically release lock and sleep
-- `wakeup()` - wake one/all waiters
-
-#### `mutex.rs` - Mutex (std-like)
-- For non-interrupt contexts
-- Simpler than SpinLock, no IRQ disable
-
-### Interrupt Management
-
-```rust
-pub fn push_off() { /* disable interrupts, increment noff */ }
-pub fn pop_off()  { /* decrement noff, enable if 0 */ }
-pub fn intr_on()  { /* enable interrupts */ }
-pub fn intr_off() { /* disable interrupts */ }
-pub fn holding(lock: &SpinLock<_>) -> bool { /* check if current CPU holds lock */ }
-```
-
----
-
-## Trap Handling
-
-### Architecture (`arch/trap.rs`)
-
-#### Entry Points (Assembly in `arch/asm.rs`)
-- `uservec` - user -> kernel (trampoline)
-- `kernelvec` - kernel -> kernel
-- `userret` - kernel -> user
-- `context_switch` - process context switch
-
-#### Trap Handling Flow
-
-```
-User Mode                    Kernel Mode
-    │                             │
-    ├─ ecall / interrupt ──────► │
-    │                       uservec (asm)
-    │                       │
-    │                       ▼
-    │                  save user regs
-    │                       │
-    │                       ▼
-    │                  usertrap() (Rust)
-    │                  ├─ syscall
-    │                  ├─ page fault
-    │                  ├─ timer interrupt
-    │                  └─ external interrupt
-    │                       │
-    │                       ▼
-    │                  userret (asm)
-    │                       │
-    │                       ▼
-    ├─ restore user regs ◄───┤
-    │                             │
-```
-
-#### Key Functions
-
-- `usertrap()` - handle traps from user mode
-- `kerneltrap()` - handle traps from kernel mode
-- `userret()` - return to user mode
-- `trapframe` manipulation
-
-### Timer
-
-- Uses `stimecmp` CSR and `ssip` SIP bit
-- `tick()` called from timer interrupt
-- Increments global `TICKS`, wakes sleepers every 100 ticks
-
----
-
-## Device Drivers
-
-### UART (`drivers/uart.rs`)
-- 16550-compatible UART at `0x10000000`
-- `uart_init()` - initialize
-- `uart_putc(c)` - output character
-- `uart_getc() -> Option<u8>` - input character
-- `uart_intr()` - interrupt handler
-
-### Virtio Block (`drivers/virtio.rs`)
-- Virtio block device at `0x10001000`
-- `virtio_init()` - initialize, negotiate features
-- `virtio_disk_rw(buf, write)` - read/write block
-- `virtio_intr()` - interrupt handler
-
-### Console (`drivers/console.rs`)
-- `console_init()` - initialize console
-- `printk(fmt)` / `printk_fmt(args)` - kernel printf
-- `console_intr()` - input interrupt
-
-### PLIC (`arch/interrupt.rs`)
-- Platform-Level Interrupt Controller
-- `plic_init()` / `plic_inithart()` - initialize
-- `plic_enable(irq, hart)` - enable interrupt
-
----
-
-## System Calls
-
-### Dispatch (`syscall/mod.rs`)
-
-```rust
-pub fn syscall(num: usize, args: [usize; 6]) -> isize {
-    match num {
-        SYS_FORK => sys_fork(),
-        SYS_EXIT => sys_exit(args[0] as i32),
-        SYS_WAIT => sys_wait(args[0] as *mut i32),
-        SYS_PIPE => sys_pipe(args[0] as *mut [i32; 2]),
-        // ... all 22 syscalls
-        _ => -1,
-    }
-}
-```
-
-### Syscall Numbers (matching C xv6)
-
-| Number | Syscall | Args |
-|--------|---------|------|
-| 1 | fork | - |
-| 2 | exit | int status |
-| 3 | wait | int* status |
-| 4 | pipe | int[2] fds |
-| 5 | read | int fd, void* buf, int n |
-| 6 | write | int fd, void* buf, int n |
-| 7 | close | int fd |
-| 8 | kill | int pid |
-| 9 | exec | char* path, char** argv |
-| 10 | fstat | int fd, struct stat* |
-| 11 | chdir | char* path |
-| 12 | dup | int fd |
-| 13 | getpid | - |
-| 14 | sbrk | int n |
-| 15 | sleep | int ticks |
-| 16 | uptime | - |
-| 17 | open | char* path, int flags |
-| 18 | mknod | char* path, short major, short minor |
-| 19 | unlink | char* path |
-| 20 | link | char* old, char* new |
-| 21 | mkdir | char* path |
-
-### User Space Interface (`user-lib/src/syscall.rs`)
-
-```rust
-macro_rules! syscall {
-    ($num:expr) => { ... };
-    ($num:expr, $a0:expr) => { ... };
-    // ... up to 6 args
-}
-```
-
----
-
-## User Space
-
-### Programs (`user/src/bin/`)
-
-Each program is a separate binary:
-- `sh.rs` - shell
-- `ls.rs` - list directory
-- `cat.rs` - concatenate files
-- `init.rs` - init process
-- `usertests.rs` - test suite
-
-### User Library (`user-lib/src/`)
-
-- `syscall.rs` - syscall macros and wrappers
-- `stdio.rs` - `print!`, `println!`, `read`, `write`
-- `string.rs` - `strcmp`, `strcpy`, `strlen`, etc.
-- `fs.rs` - `open`, `close`, `read`, `write`, `mkdir`, etc.
-- `process.rs` - `fork`, `exec`, `wait`, `exit`, `getpid`
-
-### Building User Programs
-
-- Target: `riscv64gc-unknown-linux-gnu` (static)
-- Linked with `user-lib` and `alloc`
-- Heap initialized via `sbrk` syscall
-
----
-
-## Build System
-
-### Workspace (`Cargo.toml`)
-
-```toml
-[workspace]
-members = ["kernel", "user", "user-lib", "xtask"]
-resolver = "2"
-```
-
-### Kernel Crate (`kernel/Cargo.toml`)
-
-```toml
-[package]
-name = "kernel"
-edition = "2021"
-
-[dependencies]
-riscv = "0.11"
-tock-registers = "0.8"
-linked-list-allocator = "0.11"
-spin = "0.9"
-alloc = { version = "1", features = ["alloc_error_handler"] }
-```
-
-- `no_std`, `no_main`
-- Target: `riscv64imac-unknown-none-elf`
-- Linker script: `memory.x`
-- Build script: `build.rs` for assembly
-
-### User Crate (`user/Cargo.toml`)
-
-```toml
-[package]
-name = "user"
-edition = "2021"
-
-[dependencies]
-user-lib = { path = "../user-lib" }
-```
-
-- `std` available
-- Target: `riscv64gc-unknown-linux-gnu`
-- Each `src/bin/*.rs` becomes a separate binary
-
-### Build Automation (`xtask/`)
-
-Custom build tasks for:
-- Creating `fs.img` with user programs
-- Running QEMU with correct arguments
-- Integration testing
-
-### Running in QEMU
-
-```bash
-qemu-system-riscv64 \
-    -machine virt \
-    -nographic \
-    -bios none \
-    -kernel kernel/target/riscv64imac-unknown-none-elf/release/kernel \
-    -drive file=fs.img,if=none,format=raw,id=x0 \
-    -device virtio-blk-device,drive=x0
-```
-
----
-
-## Testing
-
-### Unit Tests
-```bash
-cargo test --package kernel
-cargo test --package user-lib
-```
-
-### Integration Tests
-```bash
-cargo test --test integration
-```
-Runs kernel in QEMU, executes usertests, compares output.
-
----
-
-## Performance Goals
-
-| Metric | Target |
-|--------|--------|
-| Boot time | ≤ C version |
-| Syscall latency | ≤ C version |
-| Context switch | ≤ C version (same asm) |
-| Memory overhead | Minimal (no GC) |
-
----
-
-## References
-
-- [xv6 Book](https://pdos.csail.mit.edu/6.1810/) - MIT 6.1810 course materials
-- [RISC-V Privileged Spec](https://riscv.org/technical/specifications/) - ISA specification
-- [Rust Embedded Book](https://docs.rust-embedded.org/book/) - Rust for embedded/kernel
+**Implemented path:** `proc/scheduler.rs` allocates process slots and kernel stacks, scans runnable processes, and switches through assembly `swtch`. `proc/mod.rs` provides `userinit`, `sleep`, `wakeup`, `kexit`, timer ticks, and current CPU/process accessors. `arch/trap.rs` defines trap frames and contexts; `usertrapret` prepares a trap frame and transfers through the trampoline back to user mode.
+
+`sync/spinlock.rs` implements interrupt-aware spin locks and `push_off` / `pop_off`. `sync/sleeplock.rs`, `sync/condvar.rs`, and `sync/mutex.rs` provide the other synchronization primitives. Scheduler and sleep paths follow xv6 lock-across-switch discipline where the source requires it; for example, `forkret` releases the process lock after the first switch into a process.
+
+**Migration limitation:** process state combines Rust ownership, `Arc<File>`, raw process pointers, raw trap-frame pointers, and raw inode pointers. Their lifetime rules depend on kernel locking and control flow rather than being fully encoded in safe Rust types.
+
+## File system and descriptors
+
+**Ported structure:** `kernel/src/fs/` corresponds to C xv6's buffer-cache, inode/path, log, file, and pipe layers.
+
+| Rust module | Implemented path | C xv6 counterpart |
+| --- | --- | --- |
+| `fs/buf.rs` | 1 KiB buffer cache, block reads/writes, pinning | `bio.c` |
+| `fs/inode.rs` | inode cache, allocation, directories, `namei` / `nameiparent` | `fs.c` |
+| `fs/log.rs` | `begin_op`, `end_op`, log recovery | `log.c` |
+| `fs/file.rs` | open-file table and descriptor operations | `file.c` |
+| `fs/pipe.rs` | pipe state and endpoints | `pipe.c` |
+
+`fsinit()` initializes the buffer and inode caches, reads the superblock, initializes the log, and runs log recovery. Processes retain open files in a fixed-size descriptor array and track their current working directory for filesystem calls.
+
+**Migration limitation:** the on-disk constants and structures are represented in Rust, but C xv6 image compatibility and failure-mode parity require testing. `mkfs/mkfs.c` remains a C host-side program that produces `fs.img`.
+
+## Devices and interrupts
+
+**Ported structure:** Rust device support is split between `kernel/src/drivers/` and `kernel/src/arch/interrupt.rs`; it corresponds to C xv6's console, UART, VirtIO, and PLIC code.
+
+- `drivers/uart.rs` implements the 16550-compatible UART at `0x10000000`.
+- `drivers/console.rs` provides console input/output and connects console reads and writes to file descriptors.
+- `drivers/virtio.rs` initializes and drives the VirtIO MMIO block device at `0x10001000`.
+- `arch/interrupt.rs` configures and services the PLIC, dispatches UART and VirtIO interrupts, and programs supervisor timer interrupts.
+
+**Implemented path:** user and kernel traps are handled in `arch/trap.rs`. User traps save state, route `ecall` to the process syscall dispatcher, handle device interrupts, and return through the trampoline. Kernel traps use `kernelvec` while executing with the kernel page table.
+
+## System calls and user space
+
+**Implemented path:** syscall numbers 1 through 21 are defined in `kernel/src/proc/syscall.rs` and mirrored in `user-lib/src/lib.rs`. The Rust entry point is `proc_syscall()`: it reads the number and arguments from the current process trap frame, dispatches to `sys_*` functions, and writes the result back to that frame. This corresponds to C xv6's `syscall.c`, `sysproc.c`, and `sysfile.c`.
+
+The represented syscall surface is `fork`, `exit`, `wait`, `pipe`, `read`, `write`, `close`, `kill`, `exec`, `fstat`, `chdir`, `dup`, `getpid`, `sbrk`, `sleep`, `uptime`, `open`, `mknod`, `unlink`, `link`, and `mkdir`.
+
+`user-lib/src/` provides syscall wrappers plus minimal stdio, string, file, and process helpers. `user/src/bin/` contains Rust `sh`, `ls`, `cat`, `init`, `init_test`, `echo`, `mkdir`, and `rm`. The Rust shell parses and runs commands, pipes, redirections, lists, and subshells; its C counterpart is `user/sh.c`.
+
+**Migration limitation:** `user/Cargo.toml` retains an in-package `[build]` entry for `riscv64gc-unknown-linux-gnu`, but the active Rust build scripts explicitly pass `--target riscv64imac-unknown-none-elf` for both user programs and the kernel. The latter is the current scripted build path; the manifest entry is stale metadata that should be reconciled.
+
+## Build and image assembly
+
+The repository has distinct C-reference and Rust-port build paths.
+
+### C xv6 reference
+
+The root `Makefile` compiles `kernel/*.c` and assembly files, builds C user programs, invokes the C `mkfs` tool, and starts QEMU with `make qemu`. It does not build the Rust kernel.
+
+### Rust migration
+
+The workspace manifests describe `xv6-kernel`, `xv6-user`, and `xv6-user-lib`. `build_rust_users.sh` explicitly builds Rust user programs and the kernel for `riscv64imac-unknown-none-elf`, then packages `fs.img`. `run_usertests.sh` invokes that build path and boots QEMU. `.cargo/config.toml` supplies linker and Rust-flag settings for that target but declares no default target or QEMU runner.
+
+The user binaries must be built before the kernel when `init` changes, because the kernel embeds `user/_init`. The filesystem image is then assembled with the C `mkfs` program. The scripts and README are the executable build contract for current command-line details.
+
+## Verification and limitations
+
+This document is a source map, not a compatibility certificate. It records the subsystem structures and execution paths present in the repository. It deliberately does not claim complete xv6 parity, disk-image compatibility, test-suite success, or performance equivalence.
+
+When extending the Rust port, update this document only after checking the corresponding Rust path, the C xv6 reference path, and the build flow that packages and boots the changed code.
