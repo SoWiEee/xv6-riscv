@@ -197,6 +197,11 @@ impl Inode {
         self.inner().typ = typ;
     }
     
+    /// Get the major device number.
+    pub fn major(&self) -> u16 {
+        self.inner().major
+    }
+
     /// Set the major device number.
     pub fn set_major(&self, major: u16) {
         self.inner().major = major;
@@ -207,45 +212,117 @@ impl Inode {
         self.inner().minor = minor;
     }
 
+    /// Map file block number `bn` to its disk block number.
+    ///
+    /// Handles the 12 direct blocks and the single indirect block. When `alloc`
+    /// is set, missing data blocks (and the indirect block itself) are allocated
+    /// with `balloc` and the indirect block is written back. Returns 0 when the
+    /// block is unmapped and `alloc` is false, or on out-of-space / a `bn`
+    /// beyond the maximum file size. Mirrors xv6's `bmap`.
+    fn bmap(&self, inner: &mut InodeInner, bn: usize, alloc: bool) -> u32 {
+        // Direct blocks.
+        if bn < NDIRECT {
+            let mut addr = inner.addrs[bn];
+            if addr == 0 && alloc {
+                addr = balloc(self.dev);
+                inner.addrs[bn] = addr;
+            }
+            return addr;
+        }
+
+        // Indirect block: `bn - NDIRECT` indexes the block of pointers at
+        // addrs[NDIRECT].
+        let idx = bn - NDIRECT;
+        if idx >= NINDIRECT {
+            return 0; // beyond MAXFILE
+        }
+
+        let mut ind = inner.addrs[NDIRECT];
+        if ind == 0 {
+            if !alloc {
+                return 0;
+            }
+            ind = balloc(self.dev);
+            if ind == 0 {
+                return 0;
+            }
+            inner.addrs[NDIRECT] = ind;
+        }
+
+        let bp = bread(self.dev, ind);
+        let addr;
+        let mut dirty = false;
+        {
+            let mut buf = bp.lock();
+            let data = buf.data_mut();
+            // SAFETY: a block is BSIZE bytes = NINDIRECT u32 entries and the
+            // buffer is suitably aligned for u32 access.
+            let entries = unsafe {
+                core::slice::from_raw_parts_mut(data.as_mut_ptr() as *mut u32, NINDIRECT)
+            };
+            let mut a = entries[idx];
+            if a == 0 && alloc {
+                a = balloc(self.dev);
+                entries[idx] = a;
+                dirty = a != 0;
+            }
+            addr = a;
+        }
+        if dirty {
+            bwrite(&bp);
+        }
+        brelse(bp);
+        addr
+    }
+
     /// Read data from the inode.
-    /// 
+    ///
     /// # Arguments
     /// * `dst` - Destination buffer
     /// * `off` - Offset in file
     /// * `n` - Number of bytes to read
-    /// 
+    ///
     /// Returns number of bytes read (0 at EOF).
     pub fn read(&self, dst: &mut [u8], off: usize, n: usize) -> usize {
         let _lock = self.lock();
-        let inner = self.inner();
+        let mut inner = self.inner();
         let size = inner.size as usize;
-        
+
         if off >= size {
             return 0;
         }
-        
+
         let n = core::cmp::min(n, size - off);
         let mut total = 0;
         let mut offset = off;
         let mut remaining = n;
-        
+
         while remaining > 0 {
             let bn = offset / BSIZE;
             let boff = offset % BSIZE;
             let chunk = core::cmp::min(remaining, BSIZE - boff);
-            
-            let bp = bread(self.dev, inner.addrs[bn]);
-            let buf = bp.lock();
-            let data = buf.data();
-            dst[total..total + chunk].copy_from_slice(&data[boff..boff + chunk]);
-            drop(buf);
-            brelse(bp);
-            
+
+            // Resolve the logical block to a disk block (direct or indirect).
+            let disk_bn = self.bmap(&mut inner, bn, false);
+            if disk_bn == 0 {
+                // Sparse hole within the file: reads as zeros.
+                for b in dst[total..total + chunk].iter_mut() {
+                    *b = 0;
+                }
+            } else {
+                let bp = bread(self.dev, disk_bn);
+                let buf = bp.lock();
+                let data = buf.data();
+                dst[total..total + chunk].copy_from_slice(&data[boff..boff + chunk]);
+                drop(buf);
+                brelse(bp);
+            }
+
             total += chunk;
             offset += chunk;
             remaining -= chunk;
         }
-        
+
         total
     }
 
@@ -279,16 +356,14 @@ impl Inode {
             if bn >= MAXFILE {
                 break;
             }
-            
-            // Allocate block if needed
-            if inner.addrs[bn] == 0 {
-                inner.addrs[bn] = balloc(self.dev);
-                if inner.addrs[bn] == 0 {
-                    break; // Out of space
-                }
+
+            // Resolve (allocating direct/indirect blocks as needed).
+            let disk_bn = self.bmap(&mut inner, bn, true);
+            if disk_bn == 0 {
+                break; // Out of space
             }
-            
-            let bp = bread(self.dev, inner.addrs[bn]);
+
+            let bp = bread(self.dev, disk_bn);
             {
                 let mut buf = bp.lock();
                 let data = buf.data_mut();

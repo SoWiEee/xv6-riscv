@@ -506,7 +506,27 @@ fn sys_exec(path: usize, argv: usize) -> isize {
             return -1;
         }
     };
-    
+
+    // uvmcreate only maps the trampoline. Like fork/userinit, the fresh page
+    // table must also map THIS process's trapframe at the fixed TRAPFRAME
+    // address, or the trampoline `uservec` faults (and fault-loops) on the
+    // first trap after exec returns to user mode.
+    {
+        let tf_pa = current_process().lock().trapframe as usize;
+        if new_pt
+            .map(
+                crate::mm::address::VirtAddr(crate::arch::asm::TRAPFRAME),
+                crate::mm::address::PhysAddr(tf_pa),
+                crate::arch::paging::PTE_R | crate::arch::paging::PTE_W,
+            )
+            .is_err()
+        {
+            crate::fs::fileclose(&file);
+            crate::mm::page_table::uvmfree(&mut new_pt, 0);
+            return -1;
+        }
+    }
+
     // Load ELF executable
     let entry_point = match load_elf(&file, &mut new_pt) {
         Ok(entry) => entry,
@@ -518,8 +538,35 @@ fn sys_exec(path: usize, argv: usize) -> isize {
         }
     };
     
+    // Allocate and map the user stack (4 pages) below a fixed top, mirroring
+    // userinit. setup_user_stack only *fills* these pages (via translate); it
+    // does not map them, so they must exist first or the fill fails.
+    let user_stack_top = 0x80000000usize;
+    let user_stack_bottom = user_stack_top - 4 * crate::arch::paging::PAGE_SIZE;
+    for vaddr in (user_stack_bottom..user_stack_top).step_by(crate::arch::paging::PAGE_SIZE) {
+        let page = match crate::mm::frame_allocator::kalloc() {
+            Some(p) => p,
+            None => {
+                crate::fs::fileclose(&file);
+                crate::mm::page_table::uvmfree(&mut new_pt, 0);
+                return -1;
+            }
+        };
+        if new_pt
+            .map(
+                crate::mm::address::VirtAddr(vaddr),
+                page.to_paddr(),
+                crate::arch::paging::PTE_R | crate::arch::paging::PTE_W | crate::arch::paging::PTE_U,
+            )
+            .is_err()
+        {
+            crate::fs::fileclose(&file);
+            crate::mm::page_table::uvmfree(&mut new_pt, 0);
+            return -1;
+        }
+    }
+
     // Set up user stack
-    let user_stack_top = 0x7ffffff0;
     let (sp, argv_ptr) = match setup_user_stack(&mut new_pt, &args, user_stack_top) {
         Ok(res) => res,
         Err(e) => {
@@ -793,6 +840,11 @@ fn sys_open(path: usize, flags: usize, mode: usize) -> isize {
     };
     file_inner.readable = readable;
     file_inner.writable = writable;
+    // For device files, record the major number so filewrite/fileread can
+    // route to the right driver (console = major 1).
+    if typ == crate::fs::InodeType::Device {
+        file_inner.major = inode.major();
+    }
     file_inner.inode = Some(inode);
     file_inner.off = 0;
     drop(file_inner);

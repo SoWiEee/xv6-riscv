@@ -158,15 +158,86 @@ userret:
     /* return to user mode */
     sret
 
-/* kernelvec: trap entry from kernel mode */
+/*
+ * kernelvec: trap entry from kernel mode (stvec points here while in S-mode).
+ *
+ * Interrupts (and exceptions) taken while running kernel code land here. We
+ * must save the ENTIRE interrupted register context on the current kernel
+ * stack, because `kerneltrap` is an ordinary function that clobbers all
+ * caller-saved registers, and a timer interrupt here yields (context switch)
+ * before returning. sepc/sstatus are saved and restored by kerneltrap in Rust,
+ * so kernelvec only handles the general-purpose registers.
+ */
 kernelvec:
-    /* save kernel registers, call kerneltrap, restore */
-    csrr t0, sstatus
-    csrr t1, sepc
-    csrr t2, scause
-    /* ... save registers to current process's trapframe ... */
+    addi sp, sp, -256
+    sd ra, 0(sp)
+    sd sp, 8(sp)
+    sd gp, 16(sp)
+    sd tp, 24(sp)
+    sd t0, 32(sp)
+    sd t1, 40(sp)
+    sd t2, 48(sp)
+    sd s0, 56(sp)
+    sd s1, 64(sp)
+    sd a0, 72(sp)
+    sd a1, 80(sp)
+    sd a2, 88(sp)
+    sd a3, 96(sp)
+    sd a4, 104(sp)
+    sd a5, 112(sp)
+    sd a6, 120(sp)
+    sd a7, 128(sp)
+    sd s2, 136(sp)
+    sd s3, 144(sp)
+    sd s4, 152(sp)
+    sd s5, 160(sp)
+    sd s6, 168(sp)
+    sd s7, 176(sp)
+    sd s8, 184(sp)
+    sd s9, 192(sp)
+    sd s10, 200(sp)
+    sd s11, 208(sp)
+    sd t3, 216(sp)
+    sd t4, 224(sp)
+    sd t5, 232(sp)
+    sd t6, 240(sp)
+
     call kerneltrap
-    /* ... restore ... */
+
+    ld ra, 0(sp)
+    ld sp, 8(sp)
+    ld gp, 16(sp)
+    /* not tp (contains hartid), in case we moved CPUs */
+    ld t0, 32(sp)
+    ld t1, 40(sp)
+    ld t2, 48(sp)
+    ld s0, 56(sp)
+    ld s1, 64(sp)
+    ld a0, 72(sp)
+    ld a1, 80(sp)
+    ld a2, 88(sp)
+    ld a3, 96(sp)
+    ld a4, 104(sp)
+    ld a5, 112(sp)
+    ld a6, 120(sp)
+    ld a7, 128(sp)
+    ld s2, 136(sp)
+    ld s3, 144(sp)
+    ld s4, 152(sp)
+    ld s5, 160(sp)
+    ld s6, 168(sp)
+    ld s7, 176(sp)
+    ld s8, 184(sp)
+    ld s9, 192(sp)
+    ld s10, 200(sp)
+    ld s11, 208(sp)
+    ld t3, 216(sp)
+    ld t4, 224(sp)
+    ld t5, 232(sp)
+    ld t6, 240(sp)
+    addi sp, sp, 256
+
+    /* return to whatever we were doing in the kernel */
     sret
 
 .global arch_init_init

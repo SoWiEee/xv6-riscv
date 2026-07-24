@@ -16,24 +16,43 @@ unsafe extern "C" {
 }
 
 /// A Sv39 page table.
-/// 
-/// Owns the root page table page and all descendant pages. When dropped,
-/// recursively frees all allocated page table pages and mapped physical pages.
-/// 
+///
+/// An **owning** `PageTable` (from [`PageTable::new`]) owns the root page and all
+/// descendant pages; dropping it recursively frees every page-table page and
+/// mapped physical page.
+///
+/// A **borrowing** view ([`PageTable::from_root`] or [`Clone`]) refers to an
+/// existing tree without owning it: `owned == false`, so dropping it frees
+/// nothing. This is essential — constructing a throwaway view over a live
+/// process page table (e.g. to `translate` an address) must NOT tear down that
+/// process's address space when the view goes out of scope.
+///
 /// # Example
 /// ```
 /// let mut pt = PageTable::new()?;
 /// pt.map(VirtAddr(0x1000), PhysAddr(0x80000000), PTE_R | PTE_W | PTE_V)?;
 /// ```
-#[derive(Clone)]
 pub struct PageTable {
     root_ppn: PhysPageNum,
     walker: PageTableWalker,
+    /// Whether this handle owns (and must free) the underlying tree on drop.
+    owned: bool,
+}
+
+impl Clone for PageTable {
+    /// Clone produces a **borrowing** view of the same tree, never a deep copy.
+    ///
+    /// A deep copy of an address space is done explicitly via `uvmcopy`, not
+    /// here. Making `clone` non-owning means a cloned handle can be dropped
+    /// freely without freeing the original process's page table.
+    fn clone(&self) -> Self {
+        Self { root_ppn: self.root_ppn, walker: self.walker, owned: false }
+    }
 }
 
 impl PageTable {
-    /// Create a new empty page table.
-    /// 
+    /// Create a new empty, **owning** page table.
+    ///
     /// Allocates and zeroes the root page table page.
     /// Returns an error if physical memory is exhausted.
     pub fn new() -> Result<Self, &'static str> {
@@ -41,14 +60,15 @@ impl PageTable {
         // Zero the page
         unsafe { core::ptr::write_bytes(root.to_paddr().0 as *mut u8, 0, PAGE_SIZE) };
         let walker = PageTableWalker::new(root);
-        Ok(Self { root_ppn: root, walker })
+        Ok(Self { root_ppn: root, walker, owned: true })
     }
-    
-    /// Create a page table from an existing root page number.
-    /// 
-    /// Does not allocate a new root page; caller must ensure `root_ppn` is valid.
+
+    /// Create a **borrowing** page table view from an existing root page number.
+    ///
+    /// Does not allocate, and dropping it frees nothing; the caller must ensure
+    /// `root_ppn` refers to a live tree owned elsewhere.
     pub fn from_root(root_ppn: PhysPageNum) -> Self {
-        Self { root_ppn, walker: PageTableWalker::new(root_ppn) }
+        Self { root_ppn, walker: PageTableWalker::new(root_ppn), owned: false }
     }
     
     /// Get the root physical page number.
@@ -125,9 +145,14 @@ impl PageTable {
 }
 
 impl Drop for PageTable {
-    /// Recursively free all page table pages and mapped physical pages.
+    /// Recursively free all page table pages and mapped physical pages — but
+    /// only for an owning handle. Borrowing views (`owned == false`) free
+    /// nothing, so a throwaway view over a live process page table can be
+    /// dropped safely.
     fn drop(&mut self) {
-        self.free_walk(self.root_ppn);
+        if self.owned {
+            self.free_walk(self.root_ppn);
+        }
     }
 }
 

@@ -234,8 +234,9 @@ pub fn fileread(f: &File, dst: &mut [u8]) -> usize {
             }
         }
         FileType::Device => {
-            // Device read - not implemented
-            0
+            // Route to the backing device. Only the console (major 1) exists.
+            drop(inner);
+            crate::drivers::console::console_read(dst)
         }
         FileType::None => 0,
     }
@@ -267,8 +268,9 @@ pub fn filewrite(f: &File, src: &[u8]) -> usize {
             }
         }
         FileType::Device => {
-            // Device write - not implemented
-            0
+            // Route to the backing device. Only the console (major 1) exists.
+            drop(inner);
+            crate::drivers::console::console_write(src)
         }
         FileType::None => 0,
     }
