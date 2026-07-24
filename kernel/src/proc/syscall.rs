@@ -57,7 +57,7 @@ pub fn proc_syscall() {
         SYS_FORK => sys_fork() as usize,
         SYS_EXIT => { sys_exit(tf.a0 as i32); 0 },
         SYS_WAIT => sys_wait(tf.a0) as usize,
-        SYS_PIPE => sys_pipe(tf.a0, tf.a1) as usize,
+        SYS_PIPE => sys_pipe(tf.a0) as usize,
         SYS_READ => sys_read(tf.a0, tf.a1, tf.a2) as usize,
         SYS_WRITE => sys_write(tf.a0, tf.a1, tf.a2) as usize,
         SYS_CLOSE => sys_close(tf.a0) as usize,
@@ -272,7 +272,7 @@ fn sys_wait(addr: usize) -> isize {
     }
 }
 
-fn sys_pipe(fd0: usize, fd1: usize) -> isize {
+fn sys_pipe(fdarray: usize) -> isize {
     let p = current_process();
     let mut inner = p.lock();
     
@@ -305,13 +305,18 @@ fn sys_pipe(fd0: usize, fd1: usize) -> isize {
     
     drop(inner);
     
-    // Copy file descriptors to user space
+    // Copy both descriptors to the user's `int fd[2]` array. The user passes a
+    // SINGLE pointer to the array (matching C xv6 `pipe(int*)` and the user-lib
+    // `pipe(&mut [i32; 2])`); the two ints live at `fdarray` and `fdarray + 4`.
+    // (Previously this took two separate address arguments and wrote the second
+    // fd through an uninitialised a1 register, scribbling `write_fd` into a
+    // stray user address — which corrupted the caller's heap.)
     let p = current_process();
     let mut p_inner = p.lock();
     let pt = p_inner.pagetable.as_mut().unwrap();
-    let va0 = crate::mm::address::VirtAddr(fd0);
-    let va1 = crate::mm::address::VirtAddr(fd1);
-    
+    let va0 = crate::mm::address::VirtAddr(fdarray);
+    let va1 = crate::mm::address::VirtAddr(fdarray + 4);
+
     if let (Some(pa0), Some(pa1)) = (pt.translate(va0), pt.translate(va1)) {
         let dst0 = pa0.0 as *mut i32;
         let dst1 = pa1.0 as *mut i32;
@@ -332,11 +337,16 @@ fn sys_read(fd: usize, addr: usize, n: usize) -> isize {
     if fd >= 16 || inner.ofile[fd].is_none() {
         return -1;
     }
-    
-    let f = Arc::new(filedup(&inner.ofile[fd].as_ref().unwrap()));
+
+    // Clone the `Arc<File>` handle (bumps the Arc strong count only) so the file
+    // stays alive while we drop p.lock for the possibly-blocking read. Do NOT
+    // `filedup` here: that bumps the File's own refcnt without a matching
+    // fileclose, permanently leaking a reference (a pipe would then never see
+    // its last writer close, so readers block on EOF forever).
+    let f = inner.ofile[fd].clone().unwrap();
     let pagetable = inner.pagetable.clone();
     drop(inner);
-    
+
     // Translate user address
     let pt = pagetable.as_ref().unwrap();
     let va = crate::mm::address::VirtAddr(addr);
@@ -355,11 +365,13 @@ fn sys_write(fd: usize, addr: usize, n: usize) -> isize {
     if fd >= 16 || inner.ofile[fd].is_none() {
         return -1;
     }
-    
-    let f = Arc::new(filedup(&inner.ofile[fd].as_ref().unwrap()));
+
+    // Clone the `Arc<File>` handle only (see sys_read) — never `filedup`, which
+    // would leak a File refcount and wedge pipe EOF.
+    let f = inner.ofile[fd].clone().unwrap();
     let pagetable = inner.pagetable.clone();
     drop(inner);
-    
+
     // Translate user address
     let pt = pagetable.as_ref().unwrap();
     let va = crate::mm::address::VirtAddr(addr);
@@ -374,14 +386,14 @@ fn sys_write(fd: usize, addr: usize, n: usize) -> isize {
 fn sys_close(fd: usize) -> isize {
     let p = current_process();
     let mut inner = p.lock();
-    
+
     if fd >= 16 || inner.ofile[fd].is_none() {
         return -1;
     }
-    
+
     let f = inner.ofile[fd].take().unwrap();
     drop(inner);
-    
+
     fileclose(&f);
     0
 }
@@ -619,19 +631,19 @@ fn sys_fstat(fd: usize, addr: usize) -> isize {
         return -1;
     }
     
-    let f = Arc::new(crate::fs::filedup(&inner.ofile[fd].as_ref().unwrap()));
+    // Clone the Arc handle only (see sys_read) — never filedup here.
+    let f = inner.ofile[fd].clone().unwrap();
     let pagetable = inner.pagetable.clone();
     drop(inner);
-    
+
     let pt = pagetable.as_ref().unwrap();
     let va = crate::mm::address::VirtAddr(addr);
     let pa = match pt.translate(va) {
         Some(pa) => pa,
         None => return -1,
     };
-    
-    let result = crate::fs::filestat(&f, pa.0);
-    result
+
+    crate::fs::filestat(&f, pa.0)
 }
 
 fn sys_chdir(path: usize) -> isize {
@@ -695,13 +707,13 @@ fn sys_chdir(path: usize) -> isize {
 fn sys_dup(fd: usize) -> isize {
     let p = current_process();
     let mut inner = p.lock();
-    
+
     if fd >= 16 || inner.ofile[fd].is_none() {
         return -1;
     }
-    
+
     let f = Arc::new(filedup(&inner.ofile[fd].as_ref().unwrap()));
-    
+
     // Find free fd
     for i in 0..16 {
         if inner.ofile[i].is_none() {
@@ -791,10 +803,12 @@ fn sys_open(path: usize, flags: usize, mode: usize) -> isize {
     
     drop(inner);
     
-    // Parse flags
-    let readable = (flags & 0x1) == 0; // O_RDONLY = 0, so readable if not write-only
-    let writable = (flags & 0x2) != 0 || (flags & 0x4) != 0; // O_WRONLY or O_RDWR
+    // Parse flags (values match C xv6 kernel/fcntl.h):
+    //   O_RDONLY=0x000 O_WRONLY=0x001 O_RDWR=0x002 O_CREATE=0x200 O_TRUNC=0x400
+    let readable = (flags & 0x1) == 0; // readable unless write-only
+    let writable = (flags & 0x1) != 0 || (flags & 0x2) != 0; // O_WRONLY or O_RDWR
     let create = (flags & 0x200) != 0; // O_CREATE
+    let trunc = (flags & 0x400) != 0; // O_TRUNC
     
     // Try to look up the file
     let inode = match crate::fs::namei(&path_str) {
@@ -851,6 +865,10 @@ fn sys_open(path: usize, flags: usize, mode: usize) -> isize {
         inode.unlock();
         crate::fs::iput(inode);
         return -1;
+    }
+    // O_TRUNC empties a regular file on open (used by shell `>` redirection).
+    if trunc && typ == crate::fs::InodeType::File {
+        inode.truncate();
     }
     inode.unlock();
 

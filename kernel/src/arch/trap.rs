@@ -261,7 +261,7 @@ pub extern "C" fn forkret() -> ! {
         }
         _ => {
             let pid = p.pid();
-            crate::arch::console::printk(format_args!("usertrap: unexpected scause {:#x} pid={}\n", scause, pid));
+            crate::arch::console::printk(format_args!("usertrap: unexpected scause {:#x} pid={} sepc={:#x} stval={:#x}\n", scause, pid, sepc, stval));
             crate::proc::set_killed(p);
         }
     }

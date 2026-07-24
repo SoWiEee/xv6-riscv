@@ -380,7 +380,14 @@ impl Inode {
         if offset > size {
             inner.size = offset as u32;
         }
-        
+
+        // Persist the updated size and block pointers to disk. Without this the
+        // grown file's metadata lives only in the in-memory inode and is lost on
+        // reboot (and stale on disk for any concurrent iget). Drop the inner
+        // lock first — iupdate re-acquires it.
+        drop(inner);
+        iupdate(self);
+
         total
     }
 
@@ -419,8 +426,15 @@ impl Inode {
             bfree(self.dev, inner.addrs[NDIRECT]);
             inner.addrs[NDIRECT] = 0;
         }
-        
+
         inner.size = 0;
+
+        // Persist the cleared block map and zero size. The blocks were already
+        // freed on disk above, so the on-disk inode must stop pointing at them
+        // or a later allocation could hand them out while this inode still
+        // references them. Drop the inner lock first — iupdate re-acquires it.
+        drop(inner);
+        iupdate(self);
     }
 }
 
