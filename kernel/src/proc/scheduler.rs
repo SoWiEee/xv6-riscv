@@ -78,8 +78,19 @@ pub fn free_proc(p: &Proc) {
         free_kernel_stack(inner.kstack);
         inner.kstack = 0;
     }
-    if let Some(pt) = inner.pagetable.take() {
+    // Free the user address space: uvmfree unmaps and frees the user pages in
+    // [0, sz); dropping the page table then frees the page-table structure
+    // (Drop clears the trampoline/trapframe leaves without freeing them).
+    let sz = inner.sz;
+    if let Some(mut pt) = inner.pagetable.take() {
+        crate::mm::page_table::uvmfree(&mut pt, sz);
         drop(pt);
+    }
+    // The trapframe has its own page; Drop deliberately leaves it alone, so
+    // release it here now that the process is gone.
+    if !inner.trapframe.is_null() {
+        let ppn = crate::mm::address::PhysPageNum::new((inner.trapframe as usize) >> 12);
+        free_page(ppn);
     }
     inner.trapframe = core::ptr::null_mut();
     inner.context = Context::new();

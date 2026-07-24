@@ -105,6 +105,18 @@ impl PageTable {
             }
         }
     }
+
+    /// Clear a leaf mapping without freeing the backing physical page.
+    ///
+    /// Used for the trampoline (shared kernel text) and the trapframe (owned by
+    /// the process, or reused across exec): the mapping must be removed before
+    /// the page table is torn down, but the frame itself must not be handed
+    /// back to the allocator. Mirrors xv6 `uvmunmap(..., do_free = 0)`.
+    pub fn unmap_nofree(&mut self, vaddr: VirtAddr) {
+        if let Some(pte) = self.walker.walk(vaddr, false) {
+            pte.0 = 0;
+        }
+    }
     
     /// Translate a virtual address to a physical address.
     /// 
@@ -149,8 +161,16 @@ impl Drop for PageTable {
     /// only for an owning handle. Borrowing views (`owned == false`) free
     /// nothing, so a throwaway view over a live process page table can be
     /// dropped safely.
+    ///
+    /// The trampoline and trapframe are mapped as leaves but their frames are
+    /// NOT ours to free (trampoline is shared kernel text; the trapframe is
+    /// freed by the process or reused across exec). Clear those two PTEs first
+    /// so `free_walk` does not reclaim them — otherwise a kernel-text page ends
+    /// up back in the frame allocator and the next allocation corrupts it.
     fn drop(&mut self) {
         if self.owned {
+            self.unmap_nofree(VirtAddr(crate::arch::asm::TRAMPOLINE));
+            self.unmap_nofree(VirtAddr(crate::arch::asm::TRAPFRAME));
             self.free_walk(self.root_ppn);
         }
     }
