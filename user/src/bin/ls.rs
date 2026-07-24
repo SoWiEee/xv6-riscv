@@ -3,17 +3,17 @@
 #![no_main]
 
 extern crate alloc;
-use xv6_user_lib::{print, println, syscall, fs};
-use alloc::string::String;
+use xv6_user_lib::{println, syscall, fs};
 
 #[unsafe(no_mangle)]
-fn main() -> isize {
+fn main(argc: usize, argv: *const *const u8) -> isize {
     // Initialize heap
     xv6_user_lib::init_heap();
-    
-    // For now, just use a fixed path since we can't easily get args
-    let path = ".";
-    
+
+    // Default to the current directory; otherwise list the first argument.
+    let args = unsafe { xv6_user_lib::args(argc, argv) };
+    let path = if args.len() >= 2 { args[1] } else { "." };
+
     let fd = syscall::open(path, fs::O_RDONLY);
     if fd < 0 {
         println!("ls: cannot open {}", path);

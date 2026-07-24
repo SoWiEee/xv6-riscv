@@ -172,8 +172,57 @@ use linked_list_allocator::LockedHeap;
 #[global_allocator]
 static ALLOCATOR: LockedHeap = LockedHeap::empty();
 
+/// Program entry point (the ELF `_start`).
+///
+/// The kernel enters a fresh program here with `a0 = argc` and `a1 = argv`
+/// (set up by `exec`), so this is the user-space crt0: it calls the program's
+/// `main` and then `exit`s with its return value. Without it the ELF entry
+/// would be `main` directly, and returning from `main` would `ret` into a
+/// garbage address and fault. Every user program's `main` is `#[no_mangle]`,
+/// so it resolves as the C symbol `main` referenced here.
+#[unsafe(no_mangle)]
+pub extern "C" fn _start(argc: usize, argv: *const *const u8) -> ! {
+    unsafe extern "C" {
+        fn main(argc: usize, argv: *const *const u8) -> isize;
+    }
+    let code = unsafe { main(argc, argv) };
+    crate::syscall::exit(code as i32);
+}
+
+/// Convert a NUL-terminated C string pointer to a `&str`.
+///
+/// The kernel lays out `argv` strings NUL-terminated on the user stack, so
+/// programs reading their arguments can borrow them directly. Returns an empty
+/// string for a null pointer.
+///
+/// # Safety
+/// `ptr` must be null or point to a valid NUL-terminated UTF-8 string.
+pub unsafe fn cstr<'a>(ptr: *const u8) -> &'a str {
+    if ptr.is_null() {
+        return "";
+    }
+    let mut len = 0;
+    while unsafe { *ptr.add(len) } != 0 {
+        len += 1;
+    }
+    unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(ptr, len)) }
+}
+
+/// Collect the process arguments (`argc`/`argv` as passed to `main`) into a
+/// `Vec<&str>`.
+///
+/// # Safety
+/// `argv` must point to `argc` valid C string pointers.
+pub unsafe fn args<'a>(argc: usize, argv: *const *const u8) -> alloc::vec::Vec<&'a str> {
+    let mut v = alloc::vec::Vec::with_capacity(argc);
+    for i in 0..argc {
+        v.push(unsafe { cstr(*argv.add(i)) });
+    }
+    v
+}
+
 /// Initialize the user heap.
-/// 
+///
 /// Allocates 1MB of heap space via `sbrk` syscall and initializes
 /// the global allocator. Must be called before any allocation.
 pub fn init_heap() {

@@ -1,7 +1,7 @@
 /* user.ld - Linker script for user programs */
 
 OUTPUT_ARCH(riscv)
-ENTRY(main)
+ENTRY(_start)
 
 SECTIONS
 {

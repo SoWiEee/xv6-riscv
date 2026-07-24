@@ -474,13 +474,13 @@ fn sys_exec(path: usize, argv: usize) -> isize {
     }
     
     drop(inner);
-    
+
     // Try to open the file
     let inode = match crate::fs::namei(&path_str) {
         Ok(inode) => inode,
         Err(_) => return -1,
     };
-    
+
     // Check if it's a regular file
     inode.lock();
     if inode.typ() != crate::fs::InodeType::File {
@@ -589,18 +589,26 @@ fn sys_exec(path: usize, argv: usize) -> isize {
     }
     
     inner.pagetable = Some(new_pt);
-    inner.sz = sp; // Use stack top as size approximation
+    // sz must be the TOP of the stack region, not the current stack pointer:
+    // the user heap (sbrk/malloc) grows upward from sz, so anchoring it at the
+    // stack top keeps the heap above the stack. Setting sz = sp (mid-stack)
+    // made the first malloc hand back stack memory and clobber argv. Mirrors
+    // userinit.
+    inner.sz = user_stack_top;
     
-    // Set up trapframe for user entry
+    // Set up trapframe for user entry. a1 carries argv; a0 (argc) is delivered
+    // as this syscall's RETURN VALUE, because the dispatcher writes the return
+    // value into tf.a0 after we return — so setting tf.a0 here would just be
+    // overwritten. This matches xv6, where exec returns argc for exactly this
+    // reason.
     let tf = unsafe { &mut *inner.trapframe };
     tf.epc = entry_point;
     tf.sp = sp;
-    tf.a0 = args.len() as usize; // argc
     tf.a1 = argv_ptr; // argv pointer
-    
+
     crate::fs::fileclose(&file);
-    
-    0
+
+    args.len() as isize // argc -> lands in a0 via the dispatcher
 }
 
 fn sys_fstat(fd: usize, addr: usize) -> isize {
@@ -1169,14 +1177,14 @@ fn sys_mkdir(path: usize) -> isize {
     };
     
     parent.lock();
-    
+
     // Check if already exists
     if crate::fs::dirlookup_locked(parent, name).is_some() {
         parent.unlock();
         crate::fs::iput(parent);
         return -1;
     }
-    
+
     // Allocate new inode for directory
     let new_inode = match crate::fs::ialloc(crate::fs::ROOTDEV, crate::fs::InodeType::Dir) {
         Some(inode) => inode,
@@ -1186,32 +1194,32 @@ fn sys_mkdir(path: usize) -> isize {
             return -1;
         }
     };
-    
+
     new_inode.lock();
-    
-    // Create "." entry
+
+    // Create "." entry (Dirent::new zeroes the name, so just copy the label).
     let mut de = crate::fs::inode::Dirent::new();
     de.inum = new_inode.inum() as u16;
-    let name_bytes = b".\0\0\0\0\0\0\0\0\0\0\0\0\0";
-    de.name[..14].copy_from_slice(name_bytes);
+    de.name[..1].copy_from_slice(b".");
     new_inode.write(&de.as_bytes()[..16], 0, 16);
-    
+
     // Create ".." entry
     let mut de = crate::fs::inode::Dirent::new();
     de.inum = parent.inum() as u16;
-    let name_bytes = b"..\0\0\0\0\0\0\0\0\0\0\0\0\0";
-    de.name[..14].copy_from_slice(name_bytes);
+    de.name[..2].copy_from_slice(b"..");
     new_inode.write(&de.as_bytes()[..16], 16, 16);
-    
+
+    // Update the new directory's on-disk inode.
+    iupdate(new_inode);
     new_inode.unlock();
-    
+
     // Link it in parent directory
     let result = crate::fs::dirlink(parent, name, new_inode.inum());
-    
+
     parent.unlock();
     crate::fs::iput(parent);
     crate::fs::iput(new_inode);
-    
+
     if result.is_ok() { 0 } else { -1 }
 }
 

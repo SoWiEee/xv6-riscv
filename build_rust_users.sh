@@ -5,12 +5,17 @@ set -e
 echo "Building Rust user programs..."
 cargo build --release --target riscv64imac-unknown-none-elf -p xv6-user
 
-# Copy binaries to user directory with _ prefix (as mkfs expects)
+# Copy binaries to user directory with _ prefix (as mkfs expects).
+# These are the programs that have been ported to Rust; the remaining
+# user/_* entries below are still the original C xv6 binaries.
 echo "Copying binaries..."
 cp target/riscv64imac-unknown-none-elf/release/sh user/_sh
 cp target/riscv64imac-unknown-none-elf/release/ls user/_ls
 cp target/riscv64imac-unknown-none-elf/release/cat user/_cat
 cp target/riscv64imac-unknown-none-elf/release/init user/_init
+cp target/riscv64imac-unknown-none-elf/release/echo user/_echo
+cp target/riscv64imac-unknown-none-elf/release/mkdir user/_mkdir
+cp target/riscv64imac-unknown-none-elf/release/rm user/_rm
 
 # Rebuild the kernel AFTER refreshing user/_init: the first process (userinit)
 # runs an init image embedded into the kernel at compile time via

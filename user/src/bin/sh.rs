@@ -70,16 +70,18 @@ fn main() -> ! {
 }
 
 fn run_program(cmd: &str, args: &[&str]) {
-    let mut full_args = Vec::with_capacity(args.len() + 1);
-    full_args.push(cmd);
-    full_args.extend_from_slice(args);
-    
     let pid = syscall::fork();
     if pid == 0 {
-        // Child process
-        let mut c_args: Vec<*const u8> = full_args.iter()
-            .map(|s| s.as_ptr())
-            .collect();
+        // Child process. The kernel reads each argv entry as a C string, so we
+        // must pass NUL-terminated buffers — a bare &str slice has no
+        // terminator and the kernel would read past its end into neighbouring
+        // command-line bytes. `owned` keeps the buffers alive until exec.
+        let mut owned: Vec<Vec<u8>> = Vec::with_capacity(args.len() + 1);
+        owned.push(cstr_bytes(cmd));
+        for a in args {
+            owned.push(cstr_bytes(a));
+        }
+        let mut c_args: Vec<*const u8> = owned.iter().map(|s| s.as_ptr()).collect();
         c_args.push(core::ptr::null());
         syscall::exec(cmd, &c_args);
         // If exec returns, it failed
@@ -92,4 +94,13 @@ fn run_program(cmd: &str, args: &[&str]) {
     } else {
         println!("fork failed");
     }
+}
+
+/// Copy a string into an owned, NUL-terminated byte buffer for use as a C
+/// `argv` entry.
+fn cstr_bytes(s: &str) -> Vec<u8> {
+    let mut v = Vec::with_capacity(s.len() + 1);
+    v.extend_from_slice(s.as_bytes());
+    v.push(0);
+    v
 }
