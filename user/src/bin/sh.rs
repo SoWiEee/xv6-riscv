@@ -18,18 +18,14 @@ fn main() -> ! {
     loop {
         print!("$ ");
         
-        // Read line from stdin
+        // Read line from stdin. The kernel console driver echoes input
+        // characters (including the newline), so the shell must not echo
+        // again or every keystroke would appear twice.
         input.clear();
         loop {
             match syscall::getc() {
-                Some(b'\n') | Some(b'\r') => {
-                    println!("");
-                    break;
-                }
-                Some(c) => {
-                    input.push(c as char);
-                    syscall::putc(c);
-                }
+                Some(b'\n') | Some(b'\r') => break,
+                Some(c) => input.push(c as char),
                 None => {}
             }
         }
