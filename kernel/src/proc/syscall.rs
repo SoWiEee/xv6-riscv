@@ -148,9 +148,13 @@ fn sys_fork() -> isize {
         }
     }
     
-    // Copy cwd
+    // Copy cwd, taking our own reference (xv6 idup) so the child's iput on
+    // exit does not free an inode the parent still points at.
     npinner.cwd = pinner.cwd;
-    
+    if let Some(ptr) = pinner.cwd {
+        crate::fs::idup(unsafe { &*ptr });
+    }
+
     // Copy name
     npinner.name = pinner.name;
 
@@ -669,10 +673,14 @@ fn sys_chdir(path: usize) -> isize {
     }
     inode.unlock();
     
-    // Update cwd
+    // Update cwd, releasing the reference to the previous directory.
     let p = current_process();
     let mut inner = p.lock();
-    inner.cwd = Some(inode as *const Inode);
+    let old = inner.cwd.replace(inode as *const Inode);
+    drop(inner);
+    if let Some(old_ptr) = old {
+        crate::fs::iput(unsafe { &*old_ptr });
+    }
     0
 }
 
@@ -819,23 +827,34 @@ fn sys_open(path: usize, flags: usize, mode: usize) -> isize {
         }
     };
     
-    // Check file type
+    // Check file type. Directories may be opened read-only (for `ls`); any
+    // write access to a directory is rejected, matching xv6.
     inode.lock();
     let typ = inode.typ();
-    if typ != crate::fs::InodeType::File && typ != crate::fs::InodeType::Device {
+    if typ == crate::fs::InodeType::Dir && writable {
+        inode.unlock();
+        crate::fs::iput(inode);
+        return -1;
+    }
+    if typ != crate::fs::InodeType::File
+        && typ != crate::fs::InodeType::Device
+        && typ != crate::fs::InodeType::Dir
+    {
         inode.unlock();
         crate::fs::iput(inode);
         return -1;
     }
     inode.unlock();
-    
+
     // Allocate file structure
     let file = crate::fs::filealloc().ok_or(-1).unwrap();
     let mut file_inner = file.inner();
-    file_inner.typ = if typ == crate::fs::InodeType::File {
-        crate::fs::FileType::Inode
-    } else {
+    // Regular files and directories are read through the inode layer; only
+    // true device nodes route to a driver.
+    file_inner.typ = if typ == crate::fs::InodeType::Device {
         crate::fs::FileType::Device
+    } else {
+        crate::fs::FileType::Inode
     };
     file_inner.readable = readable;
     file_inner.writable = writable;

@@ -485,6 +485,14 @@ fn iget_locked(dev: u32, inum: u32) -> &'static Inode {
     panic!("iget: no inodes available");
 }
 
+/// Increment an inode's in-memory reference count and return a fresh handle,
+/// mirroring xv6 `idup`. Used when a cached inode (e.g. a process cwd) becomes
+/// the starting point of a path walk.
+pub fn idup(ip: &Inode) -> &'static Inode {
+    ip.refcnt.fetch_add(1, Ordering::AcqRel);
+    unsafe { &*(ip as *const Inode) }
+}
+
 pub fn iget(dev: u32, inum: u32) -> &'static Inode {
     let ip = iget_locked(dev, inum);
 
@@ -622,38 +630,79 @@ pub fn iupdate(ip: &Inode) {
 }
 
 // Directory operations
+/// Resolve `path` to an inode, mirroring xv6 `namex`.
+///
+/// The walk starts at the filesystem root for an absolute path (leading `/`)
+/// and at the calling process's current working directory otherwise. With
+/// `want_parent` set, it stops one component early and returns the parent
+/// directory together with the final path element (borrowed from `path`);
+/// this backs `nameiparent` for create/link/unlink.
+fn namex(path: &str, want_parent: bool) -> Result<(&'static Inode, &str), &'static str> {
+    let mut ip: &'static Inode = if path.starts_with('/') {
+        iget(ROOTDEV, ROOTINO)
+    } else {
+        // Start from the process cwd; fall back to root before it is set.
+        let cwd_ptr = {
+            let p = crate::proc::current_process();
+            let inner = p.lock();
+            inner.cwd
+        };
+        match cwd_ptr {
+            Some(ptr) => idup(unsafe { &*ptr }),
+            None => iget(ROOTDEV, ROOTINO),
+        }
+    };
+
+    let components: alloc::vec::Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+
+    // "/" or "" has no path elements.
+    if components.is_empty() {
+        if want_parent {
+            iput(ip);
+            return Err("no parent");
+        }
+        return Ok((ip, ""));
+    }
+
+    let last = components.len() - 1;
+    for (idx, comp) in components.iter().enumerate() {
+        ip.lock();
+        if ip.typ() != InodeType::Dir {
+            ip.unlock();
+            iput(ip);
+            return Err("not a directory");
+        }
+        if want_parent && idx == last {
+            // Stop before the final element; return the parent directory.
+            ip.unlock();
+            return Ok((ip, *comp));
+        }
+        let next = match dirlookup_locked(ip, comp) {
+            Some(next) => next,
+            None => {
+                ip.unlock();
+                iput(ip);
+                return Err("not found");
+            }
+        };
+        ip.unlock();
+        iput(ip);
+        ip = next;
+    }
+
+    if want_parent {
+        iput(ip);
+        return Err("no parent");
+    }
+    Ok((ip, ""))
+}
+
 pub fn namei(path: &str) -> Result<&'static Inode, &'static str> {
-    let (dp, name) = nameiparent(path)?;
-    let result = dirlookup(dp, name);
-    iput(dp);
-    result
+    namex(path, false).map(|(ip, _)| ip)
 }
 
 pub fn nameiparent(path: &str) -> Result<(&'static Inode, &str), &'static str> {
-    let mut dp = iget(ROOTDEV, ROOTINO);
-
-    if path == "/" {
-        return Err("no parent");
-    }
-    
-    // Simple path parsing - split by '/'
-    let components: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    if components.is_empty() {
-        return Err("invalid path");
-    }
-    
-    let name = components.last().unwrap();
-    let parent_components = &components[..components.len() - 1];
-    
-    for comp in parent_components {
-        dp.lock();
-        let next = dirlookup(dp, comp)?;
-        dp.unlock();
-        iput(dp);
-        dp = next;
-    }
-    
-    Ok((dp, name))
+    namex(path, true)
 }
 
 pub fn dirlink(dp: &Inode, name: &str, inum: u32) -> Result<(), &'static str> {

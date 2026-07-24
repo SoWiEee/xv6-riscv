@@ -9,7 +9,7 @@ pub use buf::{BSIZE, bread, brelse, bwrite, bpin, bunpin, binit, BufRef, BUF_CAC
 pub use inode::{
     Inode, InodeType, DiskInode, 
     namei, nameiparent, dirlink, dirlookup, dirlookup_locked, 
-    ialloc, iget, iput, iupdate, 
+    ialloc, iget, iput, idup, iupdate,
     iinit, NDIRECT, NINDIRECT, MAXFILE,
     Dirent
 };

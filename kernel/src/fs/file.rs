@@ -276,51 +276,33 @@ pub fn filewrite(f: &File, src: &[u8]) -> usize {
     }
 }
 
+/// Fill the C xv6 `struct stat` at `addr` (a kernel-reachable physical address;
+/// the caller translates the user pointer). Layout MUST match `Stat` in
+/// user-lib: dev:i32@0, ino:u32@4, type:i16@8, nlink:i16@10, size:u64@16.
 pub fn filestat(f: &File, addr: usize) -> isize {
     let inner = f.inner();
-    match inner.typ {
-        FileType::Inode => {
-            if let Some(inode) = inner.inode {
-                inode.lock();
-                let typ = inode.typ();
-                let mode = match typ {
-                    crate::fs::InodeType::Dir => 0x4000, // S_IFDIR
-                    crate::fs::InodeType::File => 0x8000, // S_IFREG
-                    crate::fs::InodeType::Device => 0x2000, // S_IFCHR
-                    _ => 0,
-                } | 0o644; // permissions
-                
-                let stat_ptr = addr as *mut u8;
-                unsafe {
-                    // dev
-                    *(stat_ptr.add(0) as *mut usize) = inode.dev() as usize;
-                    // ino
-                    *(stat_ptr.add(8) as *mut usize) = inode.inum() as usize;
-                    // mode
-                    *(stat_ptr.add(16) as *mut usize) = mode as usize;
-                    // nlink
-                    *(stat_ptr.add(24) as *mut usize) = inode.nlink() as usize;
-                    // uid
-                    *(stat_ptr.add(32) as *mut usize) = 0;
-                    // gid
-                    *(stat_ptr.add(40) as *mut usize) = 0;
-                    // rdev
-                    let major = inode.inner().major as usize;
-                    let minor = inode.inner().minor as usize;
-                    *(stat_ptr.add(48) as *mut usize) = (major << 8) | minor;
-                    // size
-                    *(stat_ptr.add(56) as *mut usize) = inode.size() as usize;
-                    // atime, mtime, ctime
-                    *(stat_ptr.add(64) as *mut usize) = 0;
-                    *(stat_ptr.add(72) as *mut usize) = 0;
-                    *(stat_ptr.add(80) as *mut usize) = 0;
-                }
-                inode.unlock();
-                0
-            } else {
-                -1
-            }
-        }
-        _ => -1,
+    let inode = match inner.inode {
+        Some(inode) => inode,
+        None => return -1,
+    };
+
+    inode.lock();
+    // InodeType is numbered to match xv6 (Dir=1, File=2, Device=3), so it maps
+    // straight onto the on-disk stat `type` field.
+    let kind = inode.typ() as i16;
+    let dev = inode.dev() as i32;
+    let ino = inode.inum();
+    let nlink = inode.nlink() as i16;
+    let size = inode.size() as u64;
+    inode.unlock();
+
+    let stat_ptr = addr as *mut u8;
+    unsafe {
+        *(stat_ptr.add(0) as *mut i32) = dev;
+        *(stat_ptr.add(4) as *mut u32) = ino;
+        *(stat_ptr.add(8) as *mut i16) = kind;
+        *(stat_ptr.add(10) as *mut i16) = nlink;
+        *(stat_ptr.add(16) as *mut u64) = size;
     }
+    0
 }

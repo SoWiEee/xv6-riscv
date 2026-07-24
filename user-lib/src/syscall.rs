@@ -117,24 +117,20 @@ pub fn mkdir(path: &str) -> isize {
     with_cstr(path, |p| syscall!(SYS_MKDIR, p as usize) as isize)
 }
 
+/// Mirrors the C xv6 `struct stat` (kernel/stat.h) so `fstat` can copy it
+/// out verbatim. Field types and order MUST match `filestat` in the kernel.
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
 pub struct Stat {
-    pub dev: usize,
-    pub ino: usize,
-    pub mode: usize,
-    pub nlink: usize,
-    pub uid: usize,
-    pub gid: usize,
-    pub rdev: usize,
-    pub size: usize,
-    pub atime: usize,
-    pub mtime: usize,
-    pub ctime: usize,
+    pub dev: i32,   // File system's disk device
+    pub ino: u32,   // Inode number
+    pub kind: i16,  // Type of file (1=dir, 2=file, 3=device); see T_* below
+    pub nlink: i16, // Number of links to file
+    pub size: u64,  // Size of file in bytes
 }
 
 impl Stat {
     pub fn type_(&self) -> u16 {
-        (self.mode >> 12) as u16
+        self.kind as u16
     }
 }
