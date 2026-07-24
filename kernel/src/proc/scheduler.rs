@@ -32,16 +32,11 @@ fn free_kernel_stack(kstack: usize) {
 }
 
 pub fn procinit() {
-    crate::arch::console::printk(format_args!("procinit: start\n"));
-    let ptr = unsafe { crate::mm::page_table::KERNEL_PAGETABLE_PTR };
-    crate::arch::console::printk(format_args!("procinit: ptr={:#x}\n", ptr as usize));
     // Initialize process table
-    for (i, p) in PROCS.iter().enumerate() {
+    for p in PROCS.iter() {
         let mut inner = p.lock();
         inner.pid = 0; // Will be set on alloc
     }
-    let ptr = unsafe { crate::mm::page_table::KERNEL_PAGETABLE_PTR };
-    crate::arch::console::printk(format_args!("procinit: end ptr={:#x}\n", ptr as usize));
 }
 
 pub fn alloc_proc() -> Option<&'static Proc> {
@@ -100,7 +95,6 @@ pub fn free_proc(p: &Proc) {
 
 pub fn scheduler() -> ! {
     crate::proc::set_scheduler_started();
-    crate::arch::console::printk(format_args!("scheduler: started\n"));
     loop {
         // Interrupts stay ON while the scheduler idles looking for work; the
         // per-proc lock's push_off turns them off around each context switch.

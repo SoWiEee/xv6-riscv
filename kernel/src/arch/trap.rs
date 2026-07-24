@@ -160,7 +160,6 @@ pub fn usertrapret(p: &'static crate::proc::process::Proc) -> ! {
     // uservec, any trap taken while still on the kernel page table would run
     // uservec and touch TRAPFRAME (only mapped in the user page table) -> fault
     // loop. sret re-enables interrupts in user mode via sstatus.SPIE.
-    crate::arch::console::printk(format_args!("usertrapret: intr_off, stvec={:#x}\n", TRAMPOLINE + (uservec as usize & 0xFFF)));
     intr_off();
 
     // While in user space, traps go to uservec in the trampoline page.
@@ -178,14 +177,12 @@ pub fn usertrapret(p: &'static crate::proc::process::Proc) -> ! {
     let mut sstatus = r_sstatus();
     sstatus &= !SSTATUS_SPP;
     sstatus |= SSTATUS_SPIE;
-    crate::arch::console::printk(format_args!("usertrapret: sstatus={:#x} sepc={:#x} user_satp={:#x}\n", sstatus, epc, user_satp));
     w_sstatus(sstatus);
     w_sepc(epc);
 
     // Jump to userret in the trampoline (mapped in both page tables). It
     // switches to the user page table and returns to user mode.
     let userret_va = TRAMPOLINE + (userret as usize & 0xFFF);
-    crate::arch::console::printk(format_args!("usertrapret: jumping to userret={:#x}\n", userret_va));
     let userret_fn: extern "C" fn(usize) -> ! = unsafe { core::mem::transmute(userret_va) };
     userret_fn(user_satp)
 }
@@ -213,8 +210,6 @@ pub extern "C" fn forkret() -> ! {
         let sepc = r_sepc();
         let scause = r_scause();
         let stval = r_stval();
-
-        crate::arch::console::printk(format_args!("usertrap: scause={:#x} sepc={:#x}\n", scause, sepc));
 
         if (r_sstatus() & SSTATUS_SPP) != 0 {
             panic!("usertrap: not from user mode");

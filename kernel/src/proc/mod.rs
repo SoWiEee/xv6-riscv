@@ -106,33 +106,23 @@ pub fn userinit() {
     // Load init binary into user page table
     let entry = crate::elf::load_elf_from_bytes(crate::elf::INIT_BINARY, &mut pt)
         .expect("userinit: load_elf_from_bytes failed");
-    crate::arch::console::printk(format_args!("userinit: entry={:#x}\n", entry));
-    
+
     // Allocate user stack pages (4 pages = 16KB)
     let user_stack_top = 0x80000000; // Page-aligned top (2GB)
     let user_stack_bottom = user_stack_top - 4 * crate::arch::paging::PAGE_SIZE;
-    crate::arch::console::printk(format_args!("userinit: mapping stack {:#x}..{:#x}\n", user_stack_bottom, user_stack_top));
     // Use pt.map directly since uvmalloc is for heap growth
     for vaddr in (user_stack_bottom..user_stack_top).step_by(crate::arch::paging::PAGE_SIZE) {
         let page = crate::mm::frame_allocator::kalloc().expect("userinit: failed to alloc stack page");
         pt.map(crate::mm::address::VirtAddr(vaddr), page.to_paddr(), crate::arch::paging::PTE_R | crate::arch::paging::PTE_W | crate::arch::paging::PTE_U).expect("userinit: failed to map stack page");
     }
-    // Verify mapping
-    let test_addr = user_stack_top - 0x20; // Near top
-    if let Some(pa) = pt.translate(crate::mm::address::VirtAddr(test_addr)) {
-        crate::arch::console::printk(format_args!("userinit: stack mapping verified at {:#x} -> {:#x}\n", test_addr, pa.0));
-    } else {
-        crate::arch::console::printk(format_args!("userinit: stack mapping FAILED at {:#x}\n", test_addr));
-    }
-    
+
     inner.pagetable = Some(pt);
     inner.sz = user_stack_top;
-    
+
     // Set up the trapframe user state. The kernel_* fields are filled in by
     // usertrapret on the way out to user mode, so we only set epc/sp/argc/argv.
     let tf = unsafe { &mut *inner.trapframe };
     tf.epc = entry;
-    crate::arch::console::printk(format_args!("userinit: tf.epc={:#x} tf@={:#x}\n", tf.epc, inner.trapframe as usize));
 
     // Set up user stack
     let (sp, argv_ptr) = crate::elf::setup_user_stack(

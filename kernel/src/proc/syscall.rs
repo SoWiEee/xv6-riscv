@@ -52,7 +52,6 @@ pub fn proc_syscall() {
     let tf = unsafe { &mut *tf_ptr };
     
     let num = tf.a7;
-    crate::arch::console::printk(format_args!("syscall: num={} a0={:#x}\n", num, tf.a0));
 
     tf.a0 = match num {
         SYS_FORK => sys_fork() as usize,

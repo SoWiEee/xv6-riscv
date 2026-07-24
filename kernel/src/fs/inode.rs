@@ -440,22 +440,17 @@ impl ICache {
 }
 
 pub fn iinit() {
-    crate::arch::console::printk(format_args!("iinit: start\n"));
     let mut cache = ICACHE.acquire();
     for i in 0..NINODE {
         cache.inodes[i] = Some(Inode::new(0, 0));
     }
-    crate::arch::console::printk(format_args!("iinit: done\n"));
 }
 
 fn iget_locked(dev: u32, inum: u32) -> &'static Inode {
-    crate::arch::console::printk(format_args!("iget_locked: start\n"));
     let mut cache = ICACHE.acquire();
-    crate::arch::console::printk(format_args!("iget_locked: got cache, NINODE={}\n", NINODE));
-    
+
     // Search for existing inode
     for i in 0..NINODE {
-        crate::arch::console::printk(format_args!("iget_locked: checking slot {}\n", i));
         if let Some(inode) = &cache.inodes[i] {
             let inner = inode.inner();
             if inner.typ != InodeType::None && inode.dev == dev && inode.inum == inum {
@@ -467,50 +462,38 @@ fn iget_locked(dev: u32, inum: u32) -> &'static Inode {
     
     // Find empty slot
     for i in 0..NINODE {
-        crate::arch::console::printk(format_args!("iget_locked: checking empty slot {}\n", i));
         if let Some(inode) = &cache.inodes[i] {
             // Check typ without holding guard across unsafe block
             let typ = {
                 let inner = inode.inner();
                 inner.typ
             };
-            crate::arch::console::printk(format_args!("iget_locked: got inner, typ={:?}\n", typ));
             if typ == InodeType::None {
-                crate::arch::console::printk(format_args!("iget_locked: typ is None, entering if\n"));
                 unsafe {
                     let inode_ptr = inode as *const Inode as *mut Inode;
-                    crate::arch::console::printk(format_args!("iget_locked: before dev assignment\n"));
                     (*inode_ptr).dev = dev;
-                    crate::arch::console::printk(format_args!("iget_locked: after dev assignment\n"));
                     (*inode_ptr).inum = inum;
-                    crate::arch::console::printk(format_args!("iget_locked: after inum assignment\n"));
                     (*inode_ptr).refcnt.store(1, Ordering::Release);
-                    crate::arch::console::printk(format_args!("iget_locked: after refcnt store\n"));
                     // Use spinlock directly to set typ
                     (*inode_ptr).spinlock.acquire().typ = InodeType::None;
-                    crate::arch::console::printk(format_args!("iget_locked: after inner typ assignment\n"));
                 }
-                crate::arch::console::printk(format_args!("iget_locked: found empty slot\n"));
                 return unsafe { &*(inode as *const Inode) };
             }
         }
     }
-    
+
     panic!("iget: no inodes available");
 }
 
 pub fn iget(dev: u32, inum: u32) -> &'static Inode {
-    crate::arch::console::printk(format_args!("iget: dev={} inum={}\n", dev, inum));
     let ip = iget_locked(dev, inum);
-    crate::arch::console::printk(format_args!("iget: iget_locked done\n"));
-    
+
     // Load from disk if needed
     let needs_load = {
         let inner = ip.inner();
         inner.typ == InodeType::None
     };
-    crate::arch::console::printk(format_args!("iget: needs_load={}\n", needs_load));
-    
+
     if needs_load {
         let sb = read_superblock(dev);
         let iblock = IBLOCK(inum, &sb);
@@ -640,21 +623,15 @@ pub fn iupdate(ip: &Inode) {
 
 // Directory operations
 pub fn namei(path: &str) -> Result<&'static Inode, &'static str> {
-    crate::arch::console::printk(format_args!("namei: path={}\n", path));
     let (dp, name) = nameiparent(path)?;
-    crate::arch::console::printk(format_args!("namei: got dp, name={}\n", name));
     let result = dirlookup(dp, name);
-    crate::arch::console::printk(format_args!("namei: dirlookup done\n"));
     iput(dp);
-    crate::arch::console::printk(format_args!("namei: done\n"));
     result
 }
 
 pub fn nameiparent(path: &str) -> Result<(&'static Inode, &str), &'static str> {
-    crate::arch::console::printk(format_args!("nameiparent: path={}\n", path));
     let mut dp = iget(ROOTDEV, ROOTINO);
-    crate::arch::console::printk(format_args!("nameiparent: iget done\n"));
-    
+
     if path == "/" {
         return Err("no parent");
     }

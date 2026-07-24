@@ -131,8 +131,6 @@ static VIRTIO_DEVICE: Mutex<Option<VirtioDevice>> = Mutex::new(None);
 /// 
 /// Negotiates features, allocates queue pages, and enables interrupts.
 pub fn virtio_init() {
-    crate::arch::console::printk(format_args!("virtio: initializing...\n"));
-    
     // Try multiple common virtio MMIO addresses for RISC-V virt machine
     const VIRTIO_BASES: [usize; 8] = [
         0x10001000, 0x10002000, 0x10003000, 0x10004000,
@@ -147,7 +145,6 @@ pub fn virtio_init() {
             let device_id = (base as *mut u32).add(VIRTIO_MMIO_DEVICE_ID / 4).read_volatile();
             
             if magic == 0x74726976 && (version == 1 || version == 2) && device_id == 2 {
-                crate::arch::console::printk(format_args!("virtio: found block device at {:#x}\n", base));
                 v = base as *mut u32;
                 break;
             }
@@ -161,12 +158,6 @@ pub fn virtio_init() {
     
     unsafe {
         // Verify device
-        let magic = v.add(VIRTIO_MMIO_MAGIC_VALUE / 4).read_volatile();
-        let version = v.add(VIRTIO_MMIO_VERSION / 4).read_volatile();
-        let device_id = v.add(VIRTIO_MMIO_DEVICE_ID / 4).read_volatile();
-        
-        crate::arch::console::printk(format_args!("virtio: magic={:#x} version={} device_id={}\n", magic, version, device_id));
-        
         // Reset
         v.add(VIRTIO_MMIO_STATUS / 4).write_volatile(0);
         
@@ -177,23 +168,18 @@ pub fn virtio_init() {
         // Features
         v.add(VIRTIO_MMIO_DRIVER_FEATURES / 4).write_volatile(0);
         v.add(VIRTIO_MMIO_STATUS / 4).write_volatile(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK);
-        
-        crate::arch::console::printk(format_args!("virtio: queue setup...\n"));
-        
+
         // Queue setup
         v.add(VIRTIO_MMIO_QUEUE_SEL / 4).write_volatile(0);
         let max = v.add(VIRTIO_MMIO_QUEUE_NUM_MAX / 4).read_volatile();
-        crate::arch::console::printk(format_args!("virtio: max queue={}\n", max));
         if max < 8 {
             crate::arch::console::printk(format_args!("virtio: max queue too small: {}\n", max));
             return;
         }
         v.add(VIRTIO_MMIO_QUEUE_NUM / 4).write_volatile(8);
-        crate::arch::console::printk(format_args!("virtio: queue num set\n"));
-        
+
         // Allocate queue pages
         let desc_page = alloc_page().expect("virtio desc");
-        crate::arch::console::printk(format_args!("virtio: desc page={:#x}\n", desc_page.0 << 12));
         let avail_page = alloc_page().expect("virtio avail");
         let used_page = alloc_page().expect("virtio used");
         
@@ -206,11 +192,8 @@ pub fn virtio_init() {
         v.add(VIRTIO_MMIO_QUEUE_USED_HIGH / 4).write_volatile((used_page.0 >> 20) as u32);
         
         v.add(VIRTIO_MMIO_QUEUE_READY / 4).write_volatile(1);
-        crate::arch::console::printk(format_args!("virtio: queue ready\n"));
 
         v.add(VIRTIO_MMIO_STATUS / 4).write_volatile(VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK | VIRTIO_STATUS_DRIVER_OK);
-
-        crate::arch::console::printk(format_args!("virtio: device initialized\n"));
 
         // Initialize device state
         let device = VirtioDevice::new(desc_page.0 << 12, avail_page.0 << 12, used_page.0 << 12);
@@ -311,7 +294,6 @@ pub fn virtio_rw(block: &mut Block, write: bool) {
 /// 
 /// Acknowledges the interrupt and processes the used ring.
 pub fn virtio_intr() {
-    crate::arch::console::printk(format_args!("virtio_intr\n"));
     unsafe {
         let v = VIRTIO0 as *mut u32;
         // Acknowledge interrupt
