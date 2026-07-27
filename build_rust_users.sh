@@ -16,6 +16,10 @@ cp target/riscv64imac-unknown-none-elf/release/init user/_init
 cp target/riscv64imac-unknown-none-elf/release/echo user/_echo
 cp target/riscv64imac-unknown-none-elf/release/mkdir user/_mkdir
 cp target/riscv64imac-unknown-none-elf/release/rm user/_rm
+cp target/riscv64imac-unknown-none-elf/release/grep user/_grep
+cp target/riscv64imac-unknown-none-elf/release/wc user/_wc
+cp target/riscv64imac-unknown-none-elf/release/kill user/_kill
+cp target/riscv64imac-unknown-none-elf/release/ln user/_ln
 
 # Rebuild the kernel AFTER refreshing user/_init: the first process (userinit)
 # runs an init image embedded into the kernel at compile time via
