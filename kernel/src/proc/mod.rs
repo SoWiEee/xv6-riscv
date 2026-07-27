@@ -16,6 +16,12 @@ use alloc::vec::Vec;
 use alloc::sync::Arc;
 use core::sync::atomic::AtomicUsize;
 
+/// Number of pages in a user process's stack. The stack sits directly above the
+/// program image (with a guard page below it), and the heap grows above it — see
+/// `sys_exec`/`userinit`. xv6 uses a single page; we use a few more to give
+/// Rust's larger stack frames headroom.
+pub const USER_STACK_PAGES: usize = 4;
+
 pub struct Cpu {
     pub proc: Option<&'static Proc>,
     pub context: Context,
@@ -104,14 +110,18 @@ pub fn userinit() {
     ).unwrap();
 
     // Load init binary into user page table
-    let entry = crate::elf::load_elf_from_bytes(crate::elf::INIT_BINARY, &mut pt)
+    let (entry, prog_end) = crate::elf::load_elf_from_bytes(crate::elf::INIT_BINARY, &mut pt)
         .expect("userinit: load_elf_from_bytes failed");
 
-    // Allocate user stack pages (4 pages = 16KB)
-    let user_stack_top = 0x80000000; // Page-aligned top (2GB)
-    let user_stack_bottom = user_stack_top - 4 * crate::arch::paging::PAGE_SIZE;
-    // Use pt.map directly since uvmalloc is for heap growth
-    for vaddr in (user_stack_bottom..user_stack_top).step_by(crate::arch::paging::PAGE_SIZE) {
+    // xv6 address-space layout: one guard page then the user stack directly
+    // above the program image, keeping `sz` small (see `sys_exec` for the
+    // rationale and the fork/exec/exit cost this avoids). The guard page is left
+    // unmapped so a stack overflow faults cleanly; the heap grows above the top.
+    let ps = crate::arch::paging::PAGE_SIZE;
+    let sz0 = (prog_end + ps - 1) & !(ps - 1);
+    let stack_base = sz0 + ps; // one guard page below the stack
+    let user_stack_top = stack_base + USER_STACK_PAGES * ps;
+    for vaddr in (stack_base..user_stack_top).step_by(ps) {
         let page = crate::mm::frame_allocator::kalloc().expect("userinit: failed to alloc stack page");
         pt.map(crate::mm::address::VirtAddr(vaddr), page.to_paddr(), crate::arch::paging::PTE_R | crate::arch::paging::PTE_W | crate::arch::paging::PTE_U).expect("userinit: failed to map stack page");
     }

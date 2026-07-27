@@ -135,7 +135,13 @@ impl Elf64Phdr {
 /// # Returns
 /// * `Ok(entry_point)` - The entry point address on success
 /// * `Err(&str)` - Error message on failure
-pub fn load_elf(file: &File, pt: &mut PageTable) -> Result<usize, &'static str> {
+/// Load an ELF executable from `file` into `pt`.
+///
+/// Returns `(entry_point, program_end)` where `program_end` is the highest
+/// virtual address used by any `PT_LOAD` segment (NOT page-rounded). The caller
+/// uses `program_end` to place the user stack directly above the program image
+/// (xv6 layout), keeping `sz` small so fork/exec/exit stay cheap.
+pub fn load_elf(file: &File, pt: &mut PageTable) -> Result<(usize, usize), &'static str> {
     // Read ELF header
     let mut ehdr = Elf64Ehdr {
         e_ident: [0; 16],
@@ -277,8 +283,8 @@ pub fn load_elf(file: &File, pt: &mut PageTable) -> Result<usize, &'static str> 
             }
         }
     }
-    
-    Ok(ehdr.e_entry as usize)
+
+    Ok((ehdr.e_entry as usize, max_addr))
 }
 
 /// Set up user stack with argc, argv, and envp
@@ -361,7 +367,9 @@ pub fn setup_user_stack(pt: &mut PageTable, args: &[String], sp: usize) -> Resul
 }
 
 /// Load ELF executable from embedded binary data.
-pub fn load_elf_from_bytes(data: &[u8], pt: &mut PageTable) -> Result<usize, &'static str> {
+///
+/// Returns `(entry_point, program_end)` — see [`load_elf`].
+pub fn load_elf_from_bytes(data: &[u8], pt: &mut PageTable) -> Result<(usize, usize), &'static str> {
     use crate::mm::address::VirtAddr;
     use crate::arch::paging::{PAGE_SIZE, PTE_R, PTE_W, PTE_X, PTE_U, PTE_V};
     use alloc::vec::Vec;
@@ -471,8 +479,8 @@ pub fn load_elf_from_bytes(data: &[u8], pt: &mut PageTable) -> Result<usize, &'s
             max_addr = vaddr + memsz;
         }
     }
-    
-    Ok(ehdr.e_entry as usize)
+
+    Ok((ehdr.e_entry as usize, max_addr))
 }
 
 /// Copy data from kernel buffer to user virtual address.

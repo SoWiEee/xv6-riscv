@@ -547,8 +547,8 @@ fn sys_exec(path: usize, argv: usize) -> isize {
     }
 
     // Load ELF executable
-    let entry_point = match load_elf(&file, &mut new_pt) {
-        Ok(entry) => entry,
+    let (entry_point, prog_end) = match load_elf(&file, &mut new_pt) {
+        Ok(res) => res,
         Err(e) => {
             crate::printk!("load_elf failed: {}\n", e);
             crate::fs::fileclose(&file);
@@ -556,13 +556,20 @@ fn sys_exec(path: usize, argv: usize) -> isize {
             return -1;
         }
     };
-    
-    // Allocate and map the user stack (4 pages) below a fixed top, mirroring
-    // userinit. setup_user_stack only *fills* these pages (via translate); it
-    // does not map them, so they must exist first or the fill fails.
-    let user_stack_top = 0x80000000usize;
-    let user_stack_bottom = user_stack_top - 4 * crate::arch::paging::PAGE_SIZE;
-    for vaddr in (user_stack_bottom..user_stack_top).step_by(crate::arch::paging::PAGE_SIZE) {
+
+    // xv6 address-space layout: place one guard page and then the user stack
+    // directly above the program image, so `sz` stays small (program + guard +
+    // stack). uvmcopy/uvmfree then walk only the mapped range on
+    // fork/exec/exit instead of the old ~2GB gap up to a fixed 0x80000000
+    // stack. The user heap (sbrk) grows upward from `sz`, above the stack. The
+    // guard page is left unmapped so a stack overflow faults cleanly.
+    // setup_user_stack only *fills* the stack pages (via translate), so they
+    // must be mapped first.
+    let ps = crate::arch::paging::PAGE_SIZE;
+    let sz0 = (prog_end + ps - 1) & !(ps - 1); // page-round the program end
+    let stack_base = sz0 + ps; // one guard page below the stack
+    let user_stack_top = stack_base + crate::proc::USER_STACK_PAGES * ps;
+    for vaddr in (stack_base..user_stack_top).step_by(ps) {
         let page = match crate::mm::frame_allocator::kalloc() {
             Some(p) => p,
             None => {
