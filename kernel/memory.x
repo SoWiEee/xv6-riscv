@@ -41,7 +41,10 @@ SECTIONS
     .stack (NOLOAD) : {
         . = ALIGN(16);
         _stack_start = .;
-        . += 16384;
+        /* One 16 KiB boot stack per hart (NCPU = 8). entry.S slices this by
+           mhartid; the frame allocator starts at _kernel_end, past this region,
+           so these stacks are never handed out as free pages. */
+        . += 16384 * 8;
         _stack_end = .;
     } > KERNEL
     

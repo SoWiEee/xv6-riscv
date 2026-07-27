@@ -77,19 +77,21 @@ pub extern "C" fn init() -> ! {
         // Hart 0 does full initialization
         consoleinit();
         crate::arch::console::printk(format_args!("\nxv6-rust kernel is booting\n\n"));
-        // Get physical memory range from linker script
+        // Get physical memory range from linker script. Start the free pool at
+        // _kernel_end (past the per-hart boot stacks) — starting at `end` would
+        // put the boot stacks inside the allocatable pool and hand them out.
         unsafe extern "C" {
-            fn end();
+            fn _kernel_end();
         }
-        let start = end as usize;
+        let start = _kernel_end as usize;
         let end_addr = crate::arch::asm::PHYSTOP;
-        
+
         // Initialize frame allocator first so kvminit can allocate pages
         kinit(
             PhysAddr::new(start),
             PhysAddr::new(end_addr),
         );
-        
+
         // Initialize kernel page table
         kvminit();
         kvminithart();

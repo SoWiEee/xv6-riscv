@@ -4,6 +4,12 @@ rustflags = [
     "-C", "link-arg=-nostdlib",
     "-C", "link-arg=-static",
     "-C", "panic=abort",
+    # Reserve x4 (tp) so the compiler never clobbers it. The kernel stores the
+    # per-hart id in tp (set from mhartid in mstart) and reads it via r_tp() in
+    # S-mode where mhartid is inaccessible. Without this, LLVM may use tp as a
+    # scratch register and every hart's mycpu()/lock-ownership breaks. Harmless
+    # for user programs (they don't use TLS on this target).
+    "-C", "target-feature=+reserve-x4",
 ]
 # NOTE: the linker script is intentionally NOT set here. Both the kernel and the
 # user programs share this target triple, but they need different scripts, so

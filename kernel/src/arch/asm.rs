@@ -125,11 +125,15 @@ pub fn r_sip() -> usize {
     read_csr!(sip)
 }
 
-/// Read STP (thread pointer / hartid) - CSR 0x106
+/// Read the `tp` register, which holds this hart's id (set from `mhartid` in
+/// `mstart`). `tp` (x4) is a general-purpose register, NOT a CSR — the old code
+/// read CSR 0x106 (scounteren), which is always 0, so every hart looked like
+/// hart 0. That was invisible on a single hart but breaks all per-hart state
+/// (mycpu, spinlock ownership, PLIC contexts) under SMP.
 #[inline]
 pub fn r_tp() -> usize {
     let val: usize;
-    unsafe { asm!("csrr {}, 0x106", out(reg) val) };
+    unsafe { asm!("mv {}, tp", out(reg) val) };
     val
 }
 
