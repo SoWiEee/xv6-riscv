@@ -209,33 +209,36 @@ pub fn filedup(f: &File) -> File {
 }
 
 pub fn fileread(f: &File, dst: &mut [u8]) -> usize {
-    let inner = f.inner();
-    if !inner.readable {
+    // Snapshot the fields we need, then RELEASE the FileInner lock before any
+    // blocking call. `pipe.read` (and inode/device I/O) can sleep; holding this
+    // lock across a sleep would let the sleeping process block anyone else who
+    // touches the same File — e.g. a peer that shares this fd via fork and calls
+    // fileclose (`dec_ref` locks FileInner). That is a spin-forever deadlock
+    // with interrupts off. xv6 likewise never holds the file struct lock across
+    // pipe/inode I/O.
+    let (readable, typ, pipe, inode, off) = {
+        let inner = f.inner();
+        (inner.readable, inner.typ, inner.pipe.clone(), inner.inode, inner.off)
+    };
+    if !readable {
         return 0;
     }
-    
-    match inner.typ {
-        FileType::Pipe => {
-            if let Some(pipe) = &inner.pipe {
-                pipe.read(dst)
-            } else {
-                0
-            }
-        }
-        FileType::Inode => {
-            if let Some(inode) = inner.inode {
-                let off = inner.off;
+
+    match typ {
+        FileType::Pipe => match pipe {
+            Some(pipe) => pipe.read(dst),
+            None => 0,
+        },
+        FileType::Inode => match inode {
+            Some(inode) => {
                 let n = inode.read(dst, off, dst.len());
-                drop(inner);
                 f.set_off(off + n);
                 n
-            } else {
-                0
             }
-        }
+            None => 0,
+        },
         FileType::Device => {
             // Route to the backing device. Only the console (major 1) exists.
-            drop(inner);
             crate::drivers::console::console_read(dst)
         }
         FileType::None => 0,
@@ -243,33 +246,31 @@ pub fn fileread(f: &File, dst: &mut [u8]) -> usize {
 }
 
 pub fn filewrite(f: &File, src: &[u8]) -> usize {
-    let inner = f.inner();
-    if !inner.writable {
+    // Release the FileInner lock before any blocking call (see fileread for why
+    // holding it across pipe/inode I/O deadlocks a shared File).
+    let (writable, typ, pipe, inode, off) = {
+        let inner = f.inner();
+        (inner.writable, inner.typ, inner.pipe.clone(), inner.inode, inner.off)
+    };
+    if !writable {
         return 0;
     }
-    
-    match inner.typ {
-        FileType::Pipe => {
-            if let Some(pipe) = &inner.pipe {
-                pipe.write(src)
-            } else {
-                0
-            }
-        }
-        FileType::Inode => {
-            if let Some(inode) = inner.inode {
-                let off = inner.off;
+
+    match typ {
+        FileType::Pipe => match pipe {
+            Some(pipe) => pipe.write(src),
+            None => 0,
+        },
+        FileType::Inode => match inode {
+            Some(inode) => {
                 let n = inode.write(src, off, src.len());
-                drop(inner);
                 f.set_off(off + n);
                 n
-            } else {
-                0
             }
-        }
+            None => 0,
+        },
         FileType::Device => {
             // Route to the backing device. Only the console (major 1) exists.
-            drop(inner);
             crate::drivers::console::console_write(src)
         }
         FileType::None => 0,
