@@ -235,7 +235,10 @@ pub fn fileread(f: &File, dst: &mut [u8]) -> usize {
         },
         FileType::Inode => match inode {
             Some(inode) => {
+                // readi requires the caller to hold the inode lock.
+                inode.lock();
                 let n = inode.read(dst, off, dst.len());
+                inode.unlock();
                 f.set_off(off + n);
                 n
             }
@@ -276,8 +279,12 @@ pub fn filewrite(f: &File, src: &[u8]) -> usize {
                 let mut cur_off = off;
                 while done < src.len() {
                     let n1 = core::cmp::min(src.len() - done, max);
+                    // begin_op BEFORE ilock (never sleep for log space holding an
+                    // inode lock); writei runs under the inode lock.
                     crate::fs::begin_op();
+                    inode.lock();
                     let r = inode.write(&src[done..done + n1], cur_off, n1);
+                    inode.unlock();
                     crate::fs::end_op();
                     if r > 0 {
                         cur_off += r;
@@ -304,8 +311,9 @@ pub fn filewrite(f: &File, src: &[u8]) -> usize {
 /// the caller translates the user pointer). Layout MUST match `Stat` in
 /// user-lib: dev:i32@0, ino:u32@4, type:i16@8, nlink:i16@10, size:u64@16.
 pub fn filestat(f: &File, addr: usize) -> isize {
-    let inner = f.inner();
-    let inode = match inner.inode {
+    // Snapshot the inode pointer and RELEASE the FileInner spinlock before
+    // taking the inode sleeplock — never acquire a sleeplock holding a spinlock.
+    let inode = match f.inner().inode {
         Some(inode) => inode,
         None => return -1,
     };

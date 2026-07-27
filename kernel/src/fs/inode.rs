@@ -123,12 +123,18 @@ impl Inode {
         }
     }
     
-    /// Acquire the sleep lock (for I/O operations).
-    pub fn lock(&self) -> crate::sync::sleeplock::SleepLockGuard<()> { 
-        self.lock.acquire() 
+    /// Acquire the inode's sleep lock (xv6 `ilock`), holding it until `unlock`.
+    ///
+    /// The RAII guard is `forget`-ten so the lock stays held across the caller's
+    /// whole operation — `read`/`write`/`truncate`/`dirlink`/`dirlookup_locked`
+    /// all assume the caller already holds this lock and do NOT re-acquire it
+    /// (the sleeplock is not reentrant). Every `lock()` must be balanced by
+    /// exactly one `unlock()`.
+    pub fn lock(&self) {
+        core::mem::forget(self.lock.acquire());
     }
-    
-    /// Release the sleep lock.
+
+    /// Release the inode's sleep lock (xv6 `iunlock`).
     pub fn unlock(&self) {
         self.lock.release();
     }
@@ -283,8 +289,8 @@ impl Inode {
     /// * `n` - Number of bytes to read
     ///
     /// Returns number of bytes read (0 at EOF).
+    /// Read from the inode. The caller MUST hold the inode lock (`lock()`).
     pub fn read(&self, dst: &mut [u8], off: usize, n: usize) -> usize {
-        let _lock = self.lock();
         let mut inner = self.inner();
         let size = inner.size as usize;
 
@@ -335,11 +341,12 @@ impl Inode {
     /// 
     /// Returns number of bytes written (may be less than `n` if disk full).
     /// Allocates blocks as needed.
+    /// Write to the inode. The caller MUST hold the inode lock (`lock()`) and
+    /// run inside a log transaction (`begin_op`/`end_op`).
     pub fn write(&self, src: &[u8], off: usize, n: usize) -> usize {
-        let _lock = self.lock();
         let mut inner = self.inner();
         let size = inner.size as usize;
-        
+
         if off > size {
             return 0;
         }
@@ -391,13 +398,11 @@ impl Inode {
         total
     }
 
-    /// Truncate the inode to zero length.
-    /// 
-    /// Frees all data blocks and resets size to 0.
+    /// Truncate the inode to zero length, freeing all data blocks. The caller
+    /// MUST hold the inode lock (`lock()`) and run inside a log transaction.
     pub fn truncate(&self) {
-        let _lock = self.lock();
         let mut inner = self.inner();
-        
+
         // Free direct blocks
         for i in 0..NDIRECT {
             if inner.addrs[i] != 0 {
@@ -564,6 +569,9 @@ pub fn iput(ip: &Inode) {
     drop(cache);
     
     if should_truncate {
+        // Hold the inode lock while we free its blocks and clear it on disk, as
+        // xv6 iput does. Caller is already inside a log transaction.
+        ip.lock();
         ip.truncate();
         let mut cache = ICACHE.acquire();
         for i in 0..NINODE {
@@ -580,6 +588,7 @@ pub fn iput(ip: &Inode) {
                 }
             }
         }
+        ip.unlock();
     }
 }
 
@@ -719,20 +728,19 @@ pub fn nameiparent(path: &str) -> Result<(&'static Inode, &str), &'static str> {
     namex(path, true)
 }
 
+/// Write a new directory entry (`name` -> `inum`) into `dp`. The caller MUST
+/// already hold `dp`'s inode lock (all callers hold the parent directory locked)
+/// and be inside a log transaction.
 pub fn dirlink(dp: &Inode, name: &str, inum: u32) -> Result<(), &'static str> {
-    dp.lock();
-    
     if dp.typ() != InodeType::Dir {
-        dp.unlock();
         return Err("not a directory");
     }
-    
+
     // Check if name already exists
     if dirlookup_locked(dp, name).is_some() {
-        dp.unlock();
         return Err("name exists");
     }
-    
+
     // Find free slot in directory
     let mut offset = 0;
     let entry_size = core::mem::size_of::<Dirent>();
@@ -755,7 +763,6 @@ pub fn dirlink(dp: &Inode, name: &str, inum: u32) -> Result<(), &'static str> {
             }
             
             dp.write(&de.as_bytes()[..entry_size], offset, entry_size);
-            dp.unlock();
             return Ok(());
         }
         offset += entry_size;
@@ -772,7 +779,6 @@ pub fn dirlink(dp: &Inode, name: &str, inum: u32) -> Result<(), &'static str> {
     }
     
     dp.write(&de.as_bytes()[..entry_size], offset, entry_size);
-    dp.unlock();
     Ok(())
 }
 
