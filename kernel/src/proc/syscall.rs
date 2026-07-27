@@ -98,6 +98,7 @@ pub fn proc_syscall() {
         SYS_UNLINK => sys_unlink(tf.a0) as usize,
         SYS_LINK => sys_link(tf.a0, tf.a1) as usize,
         SYS_MKDIR => sys_mkdir(tf.a0) as usize,
+        SYS_SYNC => sys_sync() as usize,
         _ => {
             crate::printk!("unknown syscall {}\n", num);
             -1isize as usize
@@ -755,6 +756,14 @@ fn sys_dup(fd: usize) -> isize {
     -1
 }
 
+/// Flush the file system to disk. With write-ahead logging every FS system call
+/// already commits its own transaction in `end_op`, so there are never dirty
+/// buffers lingering past a syscall boundary — sync has nothing to flush and
+/// simply succeeds.
+fn sys_sync() -> isize {
+    0
+}
+
 fn sys_getpid() -> isize {
     current_process().pid() as isize
 }
@@ -1067,17 +1076,42 @@ fn sys_unlink(path: usize) -> isize {
         }
     };
     
-    inode.lock();
-    
-    // Cannot unlink directories (use rmdir instead)
-    if inode.typ() == crate::fs::InodeType::Dir {
-        inode.unlock();
+    // "." and ".." can never be unlinked.
+    if name == "." || name == ".." {
         crate::fs::iput(inode);
         parent.unlock();
         crate::fs::iput(parent);
         return -1;
     }
-    
+
+    inode.lock();
+
+    // A directory may be unlinked only when empty — i.e. it holds nothing beyond
+    // its own "." and ".." entries (xv6 `isdirempty`). The inode lock is held, so
+    // `read` (which requires it) is safe here.
+    if inode.typ() == crate::fs::InodeType::Dir {
+        let de_size = core::mem::size_of::<crate::fs::inode::Dirent>();
+        let dsize = inode.size() as usize;
+        let mut off = 2 * de_size; // skip "." and ".."
+        let mut empty = true;
+        while off < dsize {
+            let mut de = crate::fs::inode::Dirent::new();
+            inode.read(&mut de.as_bytes_mut()[..de_size], off, de_size);
+            if de.inum != 0 {
+                empty = false;
+                break;
+            }
+            off += de_size;
+        }
+        if !empty {
+            inode.unlock();
+            crate::fs::iput(inode);
+            parent.unlock();
+            crate::fs::iput(parent);
+            return -1;
+        }
+    }
+
     inode.unlock();
 
     // Remove the entry from the parent directory by zeroing its Dirent, so the

@@ -65,21 +65,23 @@ pub fn set_scheduler_started() {
     unsafe { SCHEDULER_STARTED = true; }
 }
 
+/// Global timer-tick counter. A single shared cell (was previously two separate
+/// function-local `static mut TICKS`, so `ticks()` always read 0 and any
+/// `sys_sleep` spun forever). `AtomicUsize` also makes it correct when every
+/// hart's timer calls `tick()`.
+static TICKS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
 pub fn tick() {
-    // Increment ticks, wakeup sleepers
-    static mut TICKS: usize = 0;
-    unsafe {
-        TICKS += 1;
-        if TICKS % 100 == 0 {
-            // Wake up sleepers every 100 ticks
-            crate::proc::wakeup(TICKS);
-        }
+    use core::sync::atomic::Ordering;
+    let n = TICKS.fetch_add(1, Ordering::Relaxed) + 1;
+    if n % 100 == 0 {
+        // Wake up processes sleeping on the tick channel.
+        crate::proc::wakeup(n);
     }
 }
 
 pub fn ticks() -> usize {
-    static mut TICKS: usize = 0;
-    unsafe { TICKS }
+    TICKS.load(core::sync::atomic::Ordering::Relaxed)
 }
 
 pub fn userinit() {

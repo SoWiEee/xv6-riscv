@@ -20,6 +20,13 @@ cp target/riscv64imac-unknown-none-elf/release/grep user/_grep
 cp target/riscv64imac-unknown-none-elf/release/wc user/_wc
 cp target/riscv64imac-unknown-none-elf/release/kill user/_kill
 cp target/riscv64imac-unknown-none-elf/release/ln user/_ln
+cp target/riscv64imac-unknown-none-elf/release/zombie user/_zombie
+cp target/riscv64imac-unknown-none-elf/release/forktest user/_forktest
+cp target/riscv64imac-unknown-none-elf/release/stressfs user/_stressfs
+cp target/riscv64imac-unknown-none-elf/release/logstress user/_logstress
+cp target/riscv64imac-unknown-none-elf/release/sync user/_sync
+cp target/riscv64imac-unknown-none-elf/release/forphan user/_forphan
+cp target/riscv64imac-unknown-none-elf/release/dorphan user/_dorphan
 
 # Rebuild the kernel AFTER refreshing user/_init: the first process (userinit)
 # runs an init image embedded into the kernel at compile time via

@@ -84,6 +84,13 @@ pub fn uptime() -> isize {
     syscall!(SYS_UPTIME) as isize
 }
 
+/// Flush the file system to disk. With write-ahead logging every FS syscall
+/// already commits its own transaction, so this is a barrier that returns once
+/// there is nothing outstanding.
+pub fn sync() -> isize {
+    syscall!(SYS_SYNC) as isize
+}
+
 pub fn getc() -> Option<u8> {
     let mut buf = [0u8; 1];
     if read(0, &mut buf) > 0 {
