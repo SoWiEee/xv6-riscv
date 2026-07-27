@@ -95,6 +95,15 @@ impl BufRef {
     /// Get the cache index.
     pub fn index(&self) -> usize { self.index }
 
+    /// Get the disk block number this buffer currently holds.
+    ///
+    /// Reads the spinlock-protected identity field. Used by the log layer to
+    /// record which home block a logged buffer belongs to.
+    pub fn blockno(&self) -> u32 {
+        let cache = BUF_CACHE.acquire();
+        cache.buffers[self.index].as_ref().unwrap().blockno
+    }
+
     /// Lock the referenced buffer's contents (sleeplock only).
     pub fn lock(&self) -> BufGuard<'_> {
         // SAFETY: BUF_CACHE is a 'static, so the Buf lives for the whole

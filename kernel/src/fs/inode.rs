@@ -6,8 +6,8 @@
 
 use crate::sync::spinlock::{SpinLock, SpinLockGuard};
 use crate::sync::sleeplock::SleepLock;
-use crate::fs::buf::{bread, brelse, bwrite, BSIZE};
-use crate::fs::log::{begin_op, end_op, SuperBlock};
+use crate::fs::buf::{bread, brelse, BSIZE};
+use crate::fs::log::{log_write, SuperBlock};
 use alloc::vec::Vec;
 use core::str;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -269,7 +269,7 @@ impl Inode {
             addr = a;
         }
         if dirty {
-            bwrite(&bp);
+            log_write(&bp);
         }
         brelse(bp);
         addr
@@ -369,7 +369,7 @@ impl Inode {
                 let data = buf.data_mut();
                 data[boff..boff + chunk].copy_from_slice(&src[total..total + chunk]);
             }
-            bwrite(&bp);
+            log_write(&bp);
             brelse(bp);
             
             total += chunk;
@@ -583,10 +583,12 @@ pub fn iput(ip: &Inode) {
     }
 }
 
+/// Allocate a fresh on-disk inode of `typ`. MUST be called inside a transaction
+/// (begin_op/end_op); the caller opens it so the inode allocation, the directory
+/// link, and any writes commit atomically.
 pub fn ialloc(dev: u32, typ: InodeType) -> Option<&'static Inode> {
-    begin_op();
     let sb = read_superblock(dev);
-    
+
     // Search for free inode
     let off = |inum: u32| (inum as usize % IPB as usize) * core::mem::size_of::<DiskInode>();
     for inum in 1..sb.ninodes {
@@ -608,17 +610,15 @@ pub fn ialloc(dev: u32, typ: InodeType) -> Option<&'static Inode> {
             unsafe {
                 *(buf.data_mut().as_mut_ptr().add(off(inum)) as *mut DiskInode) = new_dip;
             }
-            drop(buf); // release the sleeplock before bwrite/brelse
-            bwrite(&bp);
+            drop(buf); // release the sleeplock before log_write/brelse
+            log_write(&bp);
             brelse(bp);
-            end_op();
             return Some(iget(dev, inum));
         }
         drop(buf);
         brelse(bp);
     }
-    
-    end_op();
+
     None
 }
 
@@ -639,7 +639,7 @@ pub fn iupdate(ip: &Inode) {
         dip.size = inner.size;
         dip.addrs = inner.addrs;
     }
-    bwrite(&bp);
+    log_write(&bp);
     brelse(bp);
 }
 
@@ -856,7 +856,7 @@ fn balloc(dev: u32) -> u32 {
                 continue;
             }
         }
-        bwrite(&bp);
+        log_write(&bp);
         brelse(bp);
         return b;
     }
@@ -872,7 +872,7 @@ fn bfree(dev: u32, bno: u32) {
         let data = buf.data_mut();
         data[(bno % BPB) as usize / 8] &= !(1 << (bno % BPB) % 8);
     }
-    bwrite(&bp);
+    log_write(&bp);
     brelse(bp);
 }
 

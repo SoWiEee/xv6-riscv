@@ -13,7 +13,7 @@ pub use inode::{
     iinit, NDIRECT, NINDIRECT, MAXFILE,
     Dirent
 };
-pub use log::{initlog, begin_op, end_op, SuperBlock, recover_from_log};
+pub use log::{initlog, begin_op, end_op, log_write, MAXOPBLOCKS, SuperBlock, recover_from_log};
 pub use file::{File, FileType, filealloc, fileclose, filedup, fileread, filewrite, filestat, fileinit};
 pub use pipe::Pipe;
 

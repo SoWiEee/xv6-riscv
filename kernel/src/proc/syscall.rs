@@ -9,6 +9,25 @@ use crate::mm::address::{PhysAddr, PhysPageNum, VirtAddr};
 use crate::arch::asm::{make_satp, r_satp, w_satp, sfence_vma, TRAMPOLINE};
 use crate::sync::spinlock::SpinLock;
 use crate::fs::{File, Inode, filealloc, fileclose, filewrite, filedup, fileread, iupdate, namei, nameiparent, dirlink, dirlookup, ialloc, iput, begin_op, end_op, I_DIR, I_FILE, I_DEV};
+
+/// RAII bracket for a file-system transaction. `OpGuard::new()` opens a
+/// transaction (`begin_op`) and the `Drop` closes it (`end_op`), so every early
+/// `return` inside a system call still commits/aborts the transaction exactly
+/// once — the Rust-idiomatic replacement for xv6's `end_op()` before each return.
+struct OpGuard;
+
+impl OpGuard {
+    fn new() -> Self {
+        begin_op();
+        OpGuard
+    }
+}
+
+impl Drop for OpGuard {
+    fn drop(&mut self) {
+        end_op();
+    }
+}
 use crate::arch::console::printk;
 use crate::printk;
 use crate::elf::{load_elf, setup_user_stack};
@@ -820,7 +839,10 @@ fn sys_open(path: usize, flags: usize, mode: usize) -> isize {
     let writable = (flags & 0x1) != 0 || (flags & 0x2) != 0; // O_WRONLY or O_RDWR
     let create = (flags & 0x200) != 0; // O_CREATE
     let trunc = (flags & 0x400) != 0; // O_TRUNC
-    
+
+    // Everything below may create/link/truncate on disk: run as one transaction.
+    let _op = OpGuard::new();
+
     // Try to look up the file
     let inode = match crate::fs::namei(&path_str) {
         Ok(inode) => inode,
@@ -955,15 +977,18 @@ fn sys_mknod(path: usize, major: usize, minor: usize) -> isize {
         Err(_) => return -1,
     };
     
+    // Inode allocation + directory link commit as one transaction.
+    let _op = OpGuard::new();
+
     parent.lock();
-    
+
     // Check if already exists
     if crate::fs::dirlookup_locked(parent, name).is_some() {
         parent.unlock();
         crate::fs::iput(parent);
         return -1;
     }
-    
+
     // Allocate new inode
     let new_inode = match crate::fs::ialloc(crate::fs::ROOTDEV, crate::fs::InodeType::Device) {
         Some(inode) => inode,
@@ -1026,8 +1051,12 @@ fn sys_unlink(path: usize) -> isize {
         Err(_) => return -1,
     };
     
+    // Removing the dir entry, dropping the link, and freeing the inode's blocks
+    // (if this was the last link) must commit atomically.
+    let _op = OpGuard::new();
+
     parent.lock();
-    
+
     // Look up the inode
     let inode = match crate::fs::dirlookup_locked(parent, name) {
         Some(inode) => inode,
@@ -1139,7 +1168,10 @@ fn sys_link(old: usize, new: usize) -> isize {
     }
     
     drop(inner);
-    
+
+    // Bump the old inode's link count and add the new dir entry atomically.
+    let _op = OpGuard::new();
+
     // Look up the old file
     let old_inode = match crate::fs::namei(&old_str) {
         Ok(inode) => inode,
@@ -1155,8 +1187,10 @@ fn sys_link(old: usize, new: usize) -> isize {
         return -1;
     }
     
-    // Increment link count
+    // Increment link count and persist it (the on-disk nlink must reflect the
+    // new hard link before the directory entry that references it commits).
     old_inode.inc_nlink();
+    iupdate(old_inode);
     old_inode.unlock();
     
     // Get parent of new path
@@ -1226,6 +1260,9 @@ fn sys_mkdir(path: usize) -> isize {
         Err(_) => return -1,
     };
     
+    // Inode allocation, "."/".." writes, and the parent link commit atomically.
+    let _op = OpGuard::new();
+
     parent.lock();
 
     // Check if already exists

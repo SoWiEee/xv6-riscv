@@ -193,7 +193,11 @@ pub fn fileclose(f: &File) {
         }
         FileType::Inode => {
             if let Some(inode) = inode {
+                // iput may drop the last link and free the inode's blocks, which
+                // writes to disk — that must happen inside a transaction.
+                crate::fs::begin_op();
                 crate::fs::iput(inode);
+                crate::fs::end_op();
             }
         }
         FileType::Device => {
@@ -263,9 +267,28 @@ pub fn filewrite(f: &File, src: &[u8]) -> usize {
         },
         FileType::Inode => match inode {
             Some(inode) => {
-                let n = inode.write(src, off, src.len());
-                f.set_off(off + n);
-                n
+                // Split the write into transactions small enough that each fits
+                // in the log. The bound mirrors xv6: leave room in MAXOPBLOCKS
+                // for the inode block, the indirect block, and 2 bitmap/alloc
+                // blocks, halved for the double-buffering slack.
+                let max = ((crate::fs::MAXOPBLOCKS - 1 - 1 - 2) / 2) * crate::fs::BSIZE;
+                let mut done = 0;
+                let mut cur_off = off;
+                while done < src.len() {
+                    let n1 = core::cmp::min(src.len() - done, max);
+                    crate::fs::begin_op();
+                    let r = inode.write(&src[done..done + n1], cur_off, n1);
+                    crate::fs::end_op();
+                    if r > 0 {
+                        cur_off += r;
+                    }
+                    done += r;
+                    if r != n1 {
+                        break; // short write: error or disk full
+                    }
+                }
+                f.set_off(cur_off);
+                done
             }
             None => 0,
         },

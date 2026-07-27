@@ -98,8 +98,11 @@ pub extern "C" fn init() -> ! {
         trapinit();
         plic_init();
         crate::drivers::virtio::virtio_init();
-        crate::fs::binit();
-        crate::fs::iinit();
+        // Full FS init: buffer cache, inode cache, log setup + crash recovery.
+        // Runs single-threaded here (before the scheduler), so the buffer
+        // sleeplocks spin rather than sleep. Must follow virtio_init since log
+        // recovery reads the superblock and replays the on-disk log.
+        crate::fs::fsinit();
         crate::fs::fileinit();
         crate::proc::userinit();
 
