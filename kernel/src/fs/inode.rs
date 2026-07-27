@@ -12,14 +12,23 @@ use alloc::vec::Vec;
 use core::str;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-/// Number of direct block pointers in an inode.
-pub const NDIRECT: usize = 12;
+/// Number of direct block pointers in an inode. One slot was traded from the
+/// original 12 to make room for the doubly-indirect pointer while keeping the
+/// on-disk inode at 13 addr slots (64 bytes). MUST match `NDIRECT` in the C
+/// `kernel/fs.h` used by mkfs, or packed files are misread.
+pub const NDIRECT: usize = 11;
 
-/// Number of indirect block pointers (one block of u32s).
+/// Number of block pointers in one indirect block (a full block of u32s).
 pub const NINDIRECT: usize = BSIZE / 4;
 
-/// Maximum file size in blocks (direct + indirect).
-pub const MAXFILE: usize = NDIRECT + NINDIRECT;
+/// Maximum file size in blocks: direct + one singly-indirect + one
+/// doubly-indirect level (11 + 256 + 256*256 ≈ 64 MiB).
+pub const MAXFILE: usize = NDIRECT + NINDIRECT + NINDIRECT * NINDIRECT;
+
+/// Total inode address slots: NDIRECT direct + 1 singly-indirect (`addrs[NDIRECT]`)
+/// + 1 doubly-indirect (`addrs[NDIRECT + 1]`). Stays 13 to keep the 64-byte
+/// on-disk inode layout unchanged.
+pub const NADDR: usize = NDIRECT + 2;
 
 /// On-disk inode structure.
 /// 
@@ -39,7 +48,7 @@ pub struct DiskInode {
     /// File size in bytes
     pub size: u32,
     /// Block addresses (12 direct + 1 indirect)
-    pub addrs: [u32; NDIRECT + 1],
+    pub addrs: [u32; NADDR],
 }
 
 impl DiskInode {
@@ -51,7 +60,7 @@ impl DiskInode {
             minor: 0,
             nlink: 0,
             size: 0,
-            addrs: [0; NDIRECT + 1],
+            addrs: [0; NADDR],
         }
     }
 }
@@ -101,7 +110,7 @@ pub struct InodeInner {
     pub minor: u16,
     pub nlink: u16,
     pub size: u32,
-    pub addrs: [u32; NDIRECT + 1],
+    pub addrs: [u32; NADDR],
 }
 
 impl Inode {
@@ -115,7 +124,7 @@ impl Inode {
                 minor: 0,
                 nlink: 0,
                 size: 0,
-                addrs: [0; NDIRECT + 1],
+                addrs: [0; NADDR],
             }, "inode_inner"),
             dev,
             inum,
@@ -189,12 +198,12 @@ impl Inode {
     }
     
     /// Get the block addresses.
-    pub fn addrs(&self) -> [u32; NDIRECT + 1] {
+    pub fn addrs(&self) -> [u32; NADDR] {
         self.inner().addrs
     }
     
     /// Set the block addresses.
-    pub fn set_addrs(&self, addrs: [u32; NDIRECT + 1]) {
+    pub fn set_addrs(&self, addrs: [u32; NADDR]) {
         self.inner().addrs = addrs;
     }
     
@@ -218,32 +227,13 @@ impl Inode {
         self.inner().minor = minor;
     }
 
-    /// Map file block number `bn` to its disk block number.
-    ///
-    /// Handles the 12 direct blocks and the single indirect block. When `alloc`
-    /// is set, missing data blocks (and the indirect block itself) are allocated
-    /// with `balloc` and the indirect block is written back. Returns 0 when the
-    /// block is unmapped and `alloc` is false, or on out-of-space / a `bn`
-    /// beyond the maximum file size. Mirrors xv6's `bmap`.
-    fn bmap(&self, inner: &mut InodeInner, bn: usize, alloc: bool) -> u32 {
-        // Direct blocks.
-        if bn < NDIRECT {
-            let mut addr = inner.addrs[bn];
-            if addr == 0 && alloc {
-                addr = balloc(self.dev);
-                inner.addrs[bn] = addr;
-            }
-            return addr;
-        }
-
-        // Indirect block: `bn - NDIRECT` indexes the block of pointers at
-        // addrs[NDIRECT].
-        let idx = bn - NDIRECT;
-        if idx >= NINDIRECT {
-            return 0; // beyond MAXFILE
-        }
-
-        let mut ind = inner.addrs[NDIRECT];
+    /// Fetch (allocating when `alloc`) the block number stored at entry `idx` of
+    /// the indirect block whose own block number lives in `*slot`. The indirect
+    /// block itself is allocated on demand (and `*slot` updated). Returns 0 when
+    /// unallocated and `!alloc`, or on out of space. One level of the walk shared
+    /// by the singly- and doubly-indirect cases.
+    fn indirect_entry(&self, slot: &mut u32, idx: usize, alloc: bool) -> u32 {
+        let mut ind = *slot;
         if ind == 0 {
             if !alloc {
                 return 0;
@@ -252,7 +242,7 @@ impl Inode {
             if ind == 0 {
                 return 0;
             }
-            inner.addrs[NDIRECT] = ind;
+            *slot = ind;
         }
 
         let bp = bread(self.dev, ind);
@@ -279,6 +269,49 @@ impl Inode {
         }
         brelse(bp);
         addr
+    }
+
+    /// Map file block number `bn` to its disk block number.
+    ///
+    /// Handles the direct blocks, the singly-indirect block (`addrs[NDIRECT]`),
+    /// and the doubly-indirect block (`addrs[NDIRECT + 1]`). When `alloc` is set,
+    /// missing data blocks and the indirect blocks themselves are allocated.
+    /// Returns 0 when unmapped and `!alloc`, on out of space, or for a `bn`
+    /// beyond MAXFILE. Mirrors xv6's `bmap`.
+    fn bmap(&self, inner: &mut InodeInner, bn: usize, alloc: bool) -> u32 {
+        // Direct blocks.
+        if bn < NDIRECT {
+            let mut addr = inner.addrs[bn];
+            if addr == 0 && alloc {
+                addr = balloc(self.dev);
+                inner.addrs[bn] = addr;
+            }
+            return addr;
+        }
+        let bn = bn - NDIRECT;
+
+        // Singly-indirect: one block of NINDIRECT data-block pointers.
+        if bn < NINDIRECT {
+            return self.indirect_entry(&mut inner.addrs[NDIRECT], bn, alloc);
+        }
+        let bn = bn - NINDIRECT;
+
+        // Doubly-indirect: a block of NINDIRECT pointers, each to a block of
+        // NINDIRECT data-block pointers.
+        if bn < NINDIRECT * NINDIRECT {
+            // First level index selects the second-level block; second index
+            // selects the data block within it.
+            let l1_block = self.indirect_entry(&mut inner.addrs[NDIRECT + 1], bn / NINDIRECT, alloc);
+            if l1_block == 0 {
+                return 0;
+            }
+            // `l1_block` is already allocated, so indirect_entry won't rewrite
+            // this local slot; it just walks into the second-level block.
+            let mut second = l1_block;
+            return self.indirect_entry(&mut second, bn % NINDIRECT, alloc);
+        }
+
+        0 // beyond MAXFILE
     }
 
     /// Read data from the inode.
@@ -432,6 +465,48 @@ impl Inode {
             inner.addrs[NDIRECT] = 0;
         }
 
+        // Free the doubly-indirect tree: for each first-level entry, free every
+        // data block in its second-level block plus that block, then the
+        // first-level block itself. Copy the first-level pointers out before
+        // freeing so we don't hold its buffer across the inner bfrees.
+        if inner.addrs[NDIRECT + 1] != 0 {
+            let bp = bread(self.dev, inner.addrs[NDIRECT + 1]);
+            let l1: [u32; NINDIRECT] = {
+                let buf = bp.lock();
+                let data = buf.data();
+                let src = unsafe {
+                    core::slice::from_raw_parts(data.as_ptr() as *const u32, NINDIRECT)
+                };
+                let mut arr = [0u32; NINDIRECT];
+                arr.copy_from_slice(src);
+                arr
+            };
+            brelse(bp);
+
+            for &l2block in l1.iter() {
+                if l2block == 0 {
+                    continue;
+                }
+                let bp2 = bread(self.dev, l2block);
+                {
+                    let buf = bp2.lock();
+                    let data = buf.data();
+                    let entries = unsafe {
+                        core::slice::from_raw_parts(data.as_ptr() as *const u32, NINDIRECT)
+                    };
+                    for &bno in entries {
+                        if bno != 0 {
+                            bfree(self.dev, bno);
+                        }
+                    }
+                }
+                brelse(bp2);
+                bfree(self.dev, l2block);
+            }
+            bfree(self.dev, inner.addrs[NDIRECT + 1]);
+            inner.addrs[NDIRECT + 1] = 0;
+        }
+
         inner.size = 0;
 
         // Persist the cleared block map and zero size. The blocks were already
@@ -582,7 +657,7 @@ pub fn iput(ip: &Inode) {
                         let mut inner = (*inode_ptr).inner();
                         inner.typ = InodeType::None;
                         inner.size = 0;
-                        inner.addrs = [0; NDIRECT + 1];
+                        inner.addrs = [0; NADDR];
                     }
                     break;
                 }
@@ -615,7 +690,7 @@ pub fn ialloc(dev: u32, typ: InodeType) -> Option<&'static Inode> {
             new_dip.typ = typ as u16;
             new_dip.nlink = 1;
             new_dip.size = 0;
-            new_dip.addrs = [0; NDIRECT + 1];
+            new_dip.addrs = [0; NADDR];
             unsafe {
                 *(buf.data_mut().as_mut_ptr().add(off(inum)) as *mut DiskInode) = new_dip;
             }
