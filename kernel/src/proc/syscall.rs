@@ -17,29 +17,33 @@ use alloc::vec::Vec;
 use alloc::string::String;
 use alloc::sync::Arc;
 
-// System call numbers
+// System call numbers. These MUST match C xv6 (kernel/syscall.h) so that
+// C-xv6 ELF user binaries remain runnable against this kernel. SYS_SLEEP maps
+// to C xv6's SYS_pause (13); SYS_SYNC (22) is defined for parity though there
+// is no handler yet (it falls through to the unknown-syscall arm).
 pub const SYS_FORK: usize = 1;
 pub const SYS_EXIT: usize = 2;
 pub const SYS_WAIT: usize = 3;
 pub const SYS_PIPE: usize = 4;
 pub const SYS_READ: usize = 5;
-pub const SYS_WRITE: usize = 6;
-pub const SYS_CLOSE: usize = 7;
-pub const SYS_KILL: usize = 8;
-pub const SYS_EXEC: usize = 9;
-pub const SYS_FSTAT: usize = 10;
-pub const SYS_CHDIR: usize = 11;
-pub const SYS_DUP: usize = 12;
-pub const SYS_GETPID: usize = 13;
-pub const SYS_SBRK: usize = 14;
-pub const SYS_SLEEP: usize = 15;
-pub const SYS_UPTIME: usize = 16;
-pub const SYS_OPEN: usize = 17;
-pub const SYS_MKNOD: usize = 18;
-pub const SYS_UNLINK: usize = 19;
-pub const SYS_LINK: usize = 20;
-pub const SYS_MKDIR: usize = 21;
-pub const SYS_MAX: usize = 21;
+pub const SYS_KILL: usize = 6;
+pub const SYS_EXEC: usize = 7;
+pub const SYS_FSTAT: usize = 8;
+pub const SYS_CHDIR: usize = 9;
+pub const SYS_DUP: usize = 10;
+pub const SYS_GETPID: usize = 11;
+pub const SYS_SBRK: usize = 12;
+pub const SYS_SLEEP: usize = 13;
+pub const SYS_UPTIME: usize = 14;
+pub const SYS_OPEN: usize = 15;
+pub const SYS_WRITE: usize = 16;
+pub const SYS_MKNOD: usize = 17;
+pub const SYS_UNLINK: usize = 18;
+pub const SYS_LINK: usize = 19;
+pub const SYS_MKDIR: usize = 20;
+pub const SYS_CLOSE: usize = 21;
+pub const SYS_SYNC: usize = 22;
+pub const SYS_MAX: usize = 22;
 
 pub fn proc_syscall() {
     let p = current_process();
