@@ -170,7 +170,23 @@ pub fn fileclose(f: &File) {
     if !should_close {
         return;
     }
-    
+
+    // Free this file's slot in the global table so filealloc can reuse it. The
+    // table holds a File wrapping the same FileInner Arc, so match by pointer.
+    // Scope the guard: it MUST be released before the iput below, which does
+    // block I/O under a sleeplock. (xv6 marks the slot free via f->ref = 0.)
+    {
+        let mut ftable = FILE_TABLE.acquire();
+        for slot in ftable.files.iter_mut() {
+            if let Some(tf) = slot {
+                if Arc::ptr_eq(&tf.inner, &f.inner) {
+                    *slot = None;
+                    break;
+                }
+            }
+        }
+    }
+
     let mut inner = f.inner();
     let typ = inner.typ;
     let readable = inner.readable;

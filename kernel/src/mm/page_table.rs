@@ -309,6 +309,27 @@ pub fn uvmfree(pt: &mut PageTable, sz: usize) {
     }
 }
 
+/// Shrink a user address space from `old_sz` down to `new_sz`, freeing ONLY the
+/// pages in [PGROUNDUP(new_sz), PGROUNDUP(old_sz)). Mirrors xv6 `uvmdealloc`.
+///
+/// This is the correct companion to `uvmalloc` for a shrinking `sbrk`. Note it
+/// is fundamentally different from `uvmfree(pt, new_sz)`, which unmaps the range
+/// [0, new_sz) — i.e. the process's code/data — and must never be used to shrink
+/// the heap (doing so unmaps the running program out from under itself).
+pub fn uvmdealloc(pt: &mut PageTable, old_sz: usize, new_sz: usize) -> usize {
+    if new_sz >= old_sz {
+        return old_sz;
+    }
+    let new_up = (new_sz + PAGE_SIZE - 1) / PAGE_SIZE * PAGE_SIZE;
+    let old_up = (old_sz + PAGE_SIZE - 1) / PAGE_SIZE * PAGE_SIZE;
+    if new_up < old_up {
+        for vaddr in (new_up..old_up).step_by(PAGE_SIZE) {
+            pt.unmap(VirtAddr(vaddr));
+        }
+    }
+    new_sz
+}
+
 /// Copy user page table (for fork).
 /// 
 /// Deep copies all mapped pages, allocating new physical pages.

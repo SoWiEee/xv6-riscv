@@ -87,6 +87,8 @@ pub fn ticks() -> usize {
 pub fn userinit() {
     // Create first user process
     let p = crate::proc::scheduler::alloc_proc().expect("userinit: alloc_proc failed");
+    // Record init as the reparent target for orphaned children (xv6 initproc).
+    crate::proc::set_initproc(p);
 
     // Resolve the root inode for cwd BEFORE taking the proc lock. `namei` walks
     // the buffer cache, and a buffer sleeplock release inside it calls `wakeup`,
@@ -186,6 +188,47 @@ static WAIT_QUEUES: SpinLock<BTreeMap<usize, Vec<usize>>> =
 /// own lock. Holding this across the child-scan and across `exit`'s wakeup also
 /// closes the lost-wakeup race.
 pub static WAIT_LOCK: SpinLock<()> = SpinLock::new((), "wait_lock");
+
+/// The first user process (init). When a process exits, its still-living
+/// children are handed to init so init's `wait()` loop reaps them; mirrors
+/// xv6's global `initproc`. Set once in `userinit`.
+static INITPROC: core::sync::atomic::AtomicPtr<Proc> =
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+
+pub fn set_initproc(p: &'static Proc) {
+    INITPROC.store(
+        p as *const Proc as *mut Proc,
+        core::sync::atomic::Ordering::SeqCst,
+    );
+}
+
+/// Give any children of `p` to init, so init's `wait()` loop reaps them once
+/// they exit (xv6 `reparent`). MUST be called with `WAIT_LOCK` held. Without
+/// this, a child whose parent exits first is never waited on and leaks its proc
+/// slot as a permanent Zombie once it exits.
+pub fn reparent(p: *const Proc) {
+    let ip = INITPROC.load(core::sync::atomic::Ordering::SeqCst);
+    if ip.is_null() {
+        return;
+    }
+    let mut reparented = false;
+    for pp in &crate::proc::scheduler::PROCS {
+        // Never our own child; skip to avoid a needless self-lock.
+        if core::ptr::eq(pp as *const Proc, p) {
+            continue;
+        }
+        let mut inner = pp.lock();
+        if inner.parent == Some(p as *mut Proc) {
+            inner.parent = Some(ip);
+            reparented = true;
+        }
+    }
+    // Wake init once (it rescans all its children on wake). Done AFTER the scan
+    // so no proc lock is held across wakeup, preserving that invariant.
+    if reparented {
+        wakeup(ip as usize);
+    }
+}
 
 /// Sleep on a channel, releasing the given lock.
 /// The lock must be held before calling sleep.

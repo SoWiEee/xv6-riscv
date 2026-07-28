@@ -3,7 +3,7 @@ use crate::arch::trap::TrapFrame;
 use crate::proc::current_process;
 use crate::proc::scheduler::{alloc_proc, free_proc};
 use crate::proc::process::Proc;
-use crate::mm::page_table::{PageTable, uvmcreate, uvmalloc, uvmfree, uvmcopy, kernel_pagetable};
+use crate::mm::page_table::{PageTable, uvmcreate, uvmalloc, uvmfree, uvmdealloc, uvmcopy, kernel_pagetable};
 use crate::mm::frame_allocator::{alloc_page, free_page};
 use crate::mm::address::{PhysAddr, PhysPageNum, VirtAddr};
 use crate::arch::asm::{make_satp, r_satp, w_satp, sfence_vma, TRAMPOLINE};
@@ -211,13 +211,23 @@ pub fn sys_exit(code: i32) -> ! {
         }
     }
 
-    // Drop the cwd reference.
-    let _cwd = p.lock().cwd.take();
+    // Release the cwd reference (xv6 exit: begin_op(); iput(p->cwd); end_op()).
+    // Without this every process exit leaks an in-memory inode reference.
+    let cwd = p.lock().cwd.take();
+    if let Some(cwd_ptr) = cwd {
+        crate::fs::begin_op();
+        crate::fs::iput(unsafe { &*cwd_ptr });
+        crate::fs::end_op();
+    }
 
     // Serialise with wait()/exit() via the global wait_lock, wake our parent,
     // then mark ourselves Zombie under p.lock. Release wait_lock but keep p.lock
     // held across the switch to the scheduler (xv6 discipline). Never returns.
     let wl = crate::proc::WAIT_LOCK.acquire();
+    // Hand any of our children to init so it reaps them (xv6 reparent). Must run
+    // under wait_lock and before we wake our own parent. Without this, orphaned
+    // children leak their proc slots as unreaped Zombies (grind exhausts NPROC).
+    crate::proc::reparent(p as *const _);
     let parent = unsafe { (*p.lock.data_ptr()).parent };
     if let Some(parent) = parent {
         crate::proc::wakeup(parent as usize);
@@ -784,7 +794,9 @@ fn sys_sbrk(n: usize) -> isize {
                 return -1;
             }
         } else {
-            uvmfree(pt, new_sz);
+            // Shrink: free ONLY [new_sz, old_sz). uvmfree(pt, new_sz) would unmap
+            // the process's own code/data in [0, new_sz) and fault it instantly.
+            uvmdealloc(pt, old_sz, new_sz);
         }
     }
     
@@ -914,8 +926,15 @@ fn sys_open(path: usize, flags: usize, mode: usize) -> isize {
     }
     inode.unlock();
 
-    // Allocate file structure
-    let file = crate::fs::filealloc().ok_or(-1).unwrap();
+    // Allocate file structure. An exhausted file table must fail the syscall
+    // gracefully, not panic the kernel; release the inode ref we hold first.
+    let file = match crate::fs::filealloc() {
+        Some(f) => f,
+        None => {
+            crate::fs::iput(inode);
+            return -1;
+        }
+    };
     let mut file_inner = file.inner();
     // Regular files and directories are read through the inode layer; only
     // true device nodes route to a driver.
@@ -945,6 +964,11 @@ fn sys_open(path: usize, flags: usize, mode: usize) -> isize {
             return i as isize;
         }
     }
+    // No free fd: close the file we just allocated so its table slot and inode
+    // reference are released instead of leaked. fileclose may block, so drop the
+    // proc lock first.
+    drop(inner);
+    crate::fs::fileclose(&file_arc);
     -1
 }
 
