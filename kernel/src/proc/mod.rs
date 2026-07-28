@@ -87,6 +87,15 @@ pub fn ticks() -> usize {
 pub fn userinit() {
     // Create first user process
     let p = crate::proc::scheduler::alloc_proc().expect("userinit: alloc_proc failed");
+
+    // Resolve the root inode for cwd BEFORE taking the proc lock. `namei` walks
+    // the buffer cache, and a buffer sleeplock release inside it calls `wakeup`,
+    // which must never run while a proc lock is held (at boot there is no current
+    // process, so wakeup cannot skip us by identity and would try to re-lock this
+    // very proc). "/" is absolute, so this needs no current process. The inode
+    // cache was already initialised by `fsinit()` at boot.
+    let cwd = crate::fs::namei("/").ok();
+
     let mut inner = p.lock();
     
     // Create user page table
@@ -155,12 +164,11 @@ pub fn userinit() {
     inner.state = ProcState::Runnable;
     inner.name = *b"init\0\0\0\0\0\0\0\0\0\0\0\0";
     
-    // Set cwd
-    crate::fs::iinit();
-    if let Ok(inode) = crate::fs::namei("/") {
+    // Install the cwd resolved above (no FS work while the proc lock is held).
+    if let Some(inode) = cwd {
         inner.cwd = Some(inode as *const Inode);
     }
-    
+
     drop(inner);
     
     // Make runnable
@@ -219,17 +227,22 @@ pub fn sleep(chan: usize, lock: &SpinLock<impl Sized>) {
 
 /// Wake every process sleeping on `chan`.
 ///
-/// Scans the process table (xv6 style), locking each proc except the caller to
-/// flip `Sleeping` -> `Runnable`. Taking each `p.lock` is what synchronises with
-/// `sleep`, which sets `Sleeping` under the same lock.
+/// Scans the process table (xv6 style), locking each proc to flip `Sleeping` ->
+/// `Runnable`. Taking each `p.lock` is what synchronises with `sleep`, which
+/// sets `Sleeping` under the same lock.
+///
+/// The ONLY proc skipped is the one currently running on this CPU — exactly
+/// xv6's `p != myproc()`. That process cannot be Sleeping (it is executing this
+/// call), so re-locking it would be pointless; more importantly, the invariant
+/// this relies on is that **no proc lock is ever held across `wakeup`**. We must
+/// NOT skip based on `p.lock.holding()`: that read races with another hart's
+/// `acquire` (the owner field is written after the lock is taken, so a lock held
+/// by another hart can transiently read as owned by us), which would silently
+/// drop a wakeup. Using the stable running-process identity is race-free.
 pub fn wakeup(chan: usize) {
+    let cur = current_process_opt().map(|p| p as *const Proc);
     for p in &crate::proc::scheduler::PROCS {
-        // Skip any proc whose lock THIS cpu already holds. wakeup is reachable
-        // from code that legitimately holds a proc lock (e.g. userinit holds
-        // initproc's lock across namei, and a buffer sleeplock release inside
-        // namei calls wakeup) — re-locking it here would self-deadlock. A proc
-        // we hold locked cannot be stably sleeping on `chan` anyway.
-        if p.lock.holding() {
+        if Some(p as *const Proc) == cur {
             continue;
         }
         let mut inner = p.lock();
