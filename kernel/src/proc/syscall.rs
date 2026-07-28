@@ -1089,7 +1089,8 @@ fn sys_unlink(path: usize) -> isize {
     // A directory may be unlinked only when empty — i.e. it holds nothing beyond
     // its own "." and ".." entries (xv6 `isdirempty`). The inode lock is held, so
     // `read` (which requires it) is safe here.
-    if inode.typ() == crate::fs::InodeType::Dir {
+    let is_dir = inode.typ() == crate::fs::InodeType::Dir;
+    if is_dir {
         let de_size = core::mem::size_of::<crate::fs::inode::Dirent>();
         let dsize = inode.size() as usize;
         let mut off = 2 * de_size; // skip "." and ".."
@@ -1132,6 +1133,13 @@ fn sys_unlink(path: usize) -> isize {
             }
         }
         off += entry_size;
+    }
+
+    // Removing a subdirectory drops the parent's link for the child's ".."
+    // entry that pointed back here (mirrors xv6 sys_unlink's `dp->nlink--`).
+    if is_dir {
+        parent.dec_nlink();
+        iupdate(parent);
     }
 
     // Drop a link and persist the inode; iput reclaims it once the last link
@@ -1336,6 +1344,13 @@ fn sys_mkdir(path: usize) -> isize {
 
     // Link it in parent directory
     let result = crate::fs::dirlink(parent, name, new_inode.inum());
+
+    // xv6 create(): now that the child dir is linked in, bump the parent's link
+    // count for the child's ".." entry that points back at the parent.
+    if result.is_ok() {
+        parent.inc_nlink();
+        iupdate(parent);
+    }
 
     parent.unlock();
     crate::fs::iput(parent);
