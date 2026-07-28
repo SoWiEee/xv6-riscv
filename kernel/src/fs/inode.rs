@@ -278,13 +278,18 @@ impl Inode {
     /// missing data blocks and the indirect blocks themselves are allocated.
     /// Returns 0 when unmapped and `!alloc`, on out of space, or for a `bn`
     /// beyond MAXFILE. Mirrors xv6's `bmap`.
-    fn bmap(&self, inner: &mut InodeInner, bn: usize, alloc: bool) -> u32 {
+    /// Operates on a caller-owned copy of the inode's `addrs` (never the
+    /// InodeInner spinlock): bmap does buffer I/O whose sleeplock release wakes
+    /// processes and takes proc locks, so it MUST NOT run under a spinlock. The
+    /// inode sleeplock the caller holds keeps `addrs` stable meanwhile; `write`/
+    /// `truncate` copy any bmap-allocated pointers back afterward.
+    fn bmap(&self, addrs: &mut [u32; NADDR], bn: usize, alloc: bool) -> u32 {
         // Direct blocks.
         if bn < NDIRECT {
-            let mut addr = inner.addrs[bn];
+            let mut addr = addrs[bn];
             if addr == 0 && alloc {
                 addr = balloc(self.dev);
-                inner.addrs[bn] = addr;
+                addrs[bn] = addr;
             }
             return addr;
         }
@@ -292,7 +297,7 @@ impl Inode {
 
         // Singly-indirect: one block of NINDIRECT data-block pointers.
         if bn < NINDIRECT {
-            return self.indirect_entry(&mut inner.addrs[NDIRECT], bn, alloc);
+            return self.indirect_entry(&mut addrs[NDIRECT], bn, alloc);
         }
         let bn = bn - NINDIRECT;
 
@@ -301,7 +306,7 @@ impl Inode {
         if bn < NINDIRECT * NINDIRECT {
             // First level index selects the second-level block; second index
             // selects the data block within it.
-            let l1_block = self.indirect_entry(&mut inner.addrs[NDIRECT + 1], bn / NINDIRECT, alloc);
+            let l1_block = self.indirect_entry(&mut addrs[NDIRECT + 1], bn / NINDIRECT, alloc);
             if l1_block == 0 {
                 return 0;
             }
@@ -324,8 +329,13 @@ impl Inode {
     /// Returns number of bytes read (0 at EOF).
     /// Read from the inode. The caller MUST hold the inode lock (`lock()`).
     pub fn read(&self, dst: &mut [u8], off: usize, n: usize) -> usize {
-        let mut inner = self.inner();
-        let size = inner.size as usize;
+        // Snapshot size + addrs, then release the InodeInner spinlock: the
+        // caller's inode sleeplock keeps them stable, and bmap/bread below must
+        // not run under a spinlock (their buffer sleeplock release wakes procs).
+        let (size, mut addrs) = {
+            let inner = self.inner();
+            (inner.size as usize, inner.addrs)
+        };
 
         if off >= size {
             return 0;
@@ -342,7 +352,7 @@ impl Inode {
             let chunk = core::cmp::min(remaining, BSIZE - boff);
 
             // Resolve the logical block to a disk block (direct or indirect).
-            let disk_bn = self.bmap(&mut inner, bn, false);
+            let disk_bn = self.bmap(&mut addrs, bn, false);
             if disk_bn == 0 {
                 // Sparse hole within the file: reads as zeros.
                 for b in dst[total..total + chunk].iter_mut() {
@@ -377,28 +387,33 @@ impl Inode {
     /// Write to the inode. The caller MUST hold the inode lock (`lock()`) and
     /// run inside a log transaction (`begin_op`/`end_op`).
     pub fn write(&self, src: &[u8], off: usize, n: usize) -> usize {
-        let mut inner = self.inner();
-        let size = inner.size as usize;
+        // Snapshot size + addrs and drop the spinlock (see `read`); bmap may
+        // allocate blocks, updating our local `addrs`, which we write back below.
+        let (mut size, mut addrs) = {
+            let inner = self.inner();
+            (inner.size as usize, inner.addrs)
+        };
 
         if off > size {
             return 0;
         }
-        
+
         let mut total = 0;
         let mut offset = off;
         let mut remaining = n;
-        
+
         while remaining > 0 {
             let bn = offset / BSIZE;
             let boff = offset % BSIZE;
             let chunk = core::cmp::min(remaining, BSIZE - boff);
-            
+
             if bn >= MAXFILE {
                 break;
             }
 
-            // Resolve (allocating direct/indirect blocks as needed).
-            let disk_bn = self.bmap(&mut inner, bn, true);
+            // Resolve (allocating direct/indirect blocks as needed) on the local
+            // addrs copy — no spinlock held across the buffer I/O.
+            let disk_bn = self.bmap(&mut addrs, bn, true);
             if disk_bn == 0 {
                 break; // Out of space
             }
@@ -411,21 +426,24 @@ impl Inode {
             }
             log_write(&bp);
             brelse(bp);
-            
+
             total += chunk;
             offset += chunk;
             remaining -= chunk;
         }
-        
+
         if offset > size {
-            inner.size = offset as u32;
+            size = offset;
         }
 
-        // Persist the updated size and block pointers to disk. Without this the
-        // grown file's metadata lives only in the in-memory inode and is lost on
-        // reboot (and stale on disk for any concurrent iget). Drop the inner
-        // lock first — iupdate re-acquires it.
-        drop(inner);
+        // Publish the (possibly grown) size and any blocks bmap allocated back
+        // into the in-memory inode under a brief spinlock, then persist. Without
+        // this the grown file's metadata would be lost on reboot.
+        {
+            let mut inner = self.inner();
+            inner.addrs = addrs;
+            inner.size = size as u32;
+        }
         iupdate(self);
 
         total
@@ -434,25 +452,32 @@ impl Inode {
     /// Truncate the inode to zero length, freeing all data blocks. The caller
     /// MUST hold the inode lock (`lock()`) and run inside a log transaction.
     pub fn truncate(&self) {
-        let mut inner = self.inner();
+        // Snapshot addrs and drop the spinlock (see `read`): all the bfree/bread
+        // below do buffer I/O whose sleeplock release takes proc locks and must
+        // not run under the InodeInner spinlock. The caller's sleeplock keeps the
+        // block map stable; we zero it and write it back at the end.
+        let mut addrs = {
+            let inner = self.inner();
+            inner.addrs
+        };
 
         // Free direct blocks
         for i in 0..NDIRECT {
-            if inner.addrs[i] != 0 {
-                bfree(self.dev, inner.addrs[i]);
-                inner.addrs[i] = 0;
+            if addrs[i] != 0 {
+                bfree(self.dev, addrs[i]);
+                addrs[i] = 0;
             }
         }
-        
+
         // Free indirect blocks
-        if inner.addrs[NDIRECT] != 0 {
-            let bp = bread(self.dev, inner.addrs[NDIRECT]);
+        if addrs[NDIRECT] != 0 {
+            let bp = bread(self.dev, addrs[NDIRECT]);
             {
                 let buf = bp.lock();
                 let data = buf.data();
                 // Indirect block contains array of u32 block numbers
-                let indirect: &[u32] = unsafe { 
-                    core::slice::from_raw_parts(data.as_ptr() as *const u32, NINDIRECT) 
+                let indirect: &[u32] = unsafe {
+                    core::slice::from_raw_parts(data.as_ptr() as *const u32, NINDIRECT)
                 };
                 for &bno in indirect {
                     if bno != 0 {
@@ -461,16 +486,16 @@ impl Inode {
                 }
             }
             brelse(bp);
-            bfree(self.dev, inner.addrs[NDIRECT]);
-            inner.addrs[NDIRECT] = 0;
+            bfree(self.dev, addrs[NDIRECT]);
+            addrs[NDIRECT] = 0;
         }
 
         // Free the doubly-indirect tree: for each first-level entry, free every
         // data block in its second-level block plus that block, then the
         // first-level block itself. Copy the first-level pointers out before
         // freeing so we don't hold its buffer across the inner bfrees.
-        if inner.addrs[NDIRECT + 1] != 0 {
-            let bp = bread(self.dev, inner.addrs[NDIRECT + 1]);
+        if addrs[NDIRECT + 1] != 0 {
+            let bp = bread(self.dev, addrs[NDIRECT + 1]);
             let l1: [u32; NINDIRECT] = {
                 let buf = bp.lock();
                 let data = buf.data();
@@ -503,17 +528,17 @@ impl Inode {
                 brelse(bp2);
                 bfree(self.dev, l2block);
             }
-            bfree(self.dev, inner.addrs[NDIRECT + 1]);
-            inner.addrs[NDIRECT + 1] = 0;
+            bfree(self.dev, addrs[NDIRECT + 1]);
+            addrs[NDIRECT + 1] = 0;
         }
 
-        inner.size = 0;
-
-        // Persist the cleared block map and zero size. The blocks were already
-        // freed on disk above, so the on-disk inode must stop pointing at them
-        // or a later allocation could hand them out while this inode still
-        // references them. Drop the inner lock first — iupdate re-acquires it.
-        drop(inner);
+        // Publish the cleared block map + zero size, then persist so the on-disk
+        // inode stops pointing at the freed blocks.
+        {
+            let mut inner = self.inner();
+            inner.addrs = addrs;
+            inner.size = 0;
+        }
         iupdate(self);
     }
 }
