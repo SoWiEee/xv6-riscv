@@ -12,13 +12,9 @@ _start:
     slli t1, t0, 14          /* t1 = mhartid * 16384 */
     sub sp, sp, t1
 
-    /* Only hart 0 emits the 'M' M-mode boot marker to the UART. */
-    bnez t0, 1f
-    li a0, 0x10000000
-    li a1, 'M'
-    sb a1, 0(a0)
-1:
-    /* Machine-mode setup, then mret into init() in S-mode. Never returns. */
+    /* Machine-mode setup, then mret into init() in S-mode. Never returns.
+       (An early 'M' UART poke used to live here as a pre-Rust boot marker;
+       dropped now that boot is stable so the first output is the banner.) */
     call mstart
     /* Should never get here */
 2:  wfi
