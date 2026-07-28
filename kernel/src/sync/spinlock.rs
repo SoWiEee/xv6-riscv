@@ -59,7 +59,10 @@ impl<T> SpinLock<T> {
         while self.locked.swap(true, Ordering::Acquire) {
             core::hint::spin_loop();
         }
-        unsafe { *self.cpu.get() = r_tp(); }
+        // Owner is stored as hartid + 1 so that 0 unambiguously means "unheld".
+        // Using the raw hartid made `holding()` unreliable on hart 0: a lock
+        // mid-release (cpu cleared to 0 before `locked`) read as owned-by-hart-0.
+        unsafe { *self.cpu.get() = r_tp() + 1; }
         SpinLockGuard { lock: self }
     }
     
@@ -73,7 +76,7 @@ impl<T> SpinLock<T> {
             pop_off();
             None
         } else {
-            unsafe { *self.cpu.get() = r_tp(); }
+            unsafe { *self.cpu.get() = r_tp() + 1; }
             Some(SpinLockGuard { lock: self })
         }
     }
@@ -82,7 +85,7 @@ impl<T> SpinLock<T> {
     ///
     /// Used for debugging assertions.
     pub fn holding(&self) -> bool {
-        self.locked.load(Ordering::Relaxed) && unsafe { *self.cpu.get() } == r_tp()
+        self.locked.load(Ordering::Relaxed) && unsafe { *self.cpu.get() } == r_tp() + 1
     }
 
     /// Raw pointer to the protected data. Only sound to dereference while the
