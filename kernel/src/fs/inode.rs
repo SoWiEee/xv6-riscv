@@ -544,7 +544,7 @@ impl Inode {
 }
 
 // Inode cache
-const NINODE: usize = 50;
+const NINODE: usize = 256;
 
 struct ICache {
     inodes: [Option<Inode>; NINODE],
