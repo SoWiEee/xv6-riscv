@@ -634,30 +634,38 @@ fn sys_exec(path: usize, argv: usize) -> isize {
     };
     
     let p = current_process();
-    let mut inner = p.lock();
-    
-    // Free old page table
-    if let Some(mut old_pt) = inner.pagetable.take() {
-        crate::mm::page_table::uvmfree(&mut old_pt, inner.sz);
-    }
-    
-    inner.pagetable = Some(new_pt);
-    // sz must be the TOP of the stack region, not the current stack pointer:
-    // the user heap (sbrk/malloc) grows upward from sz, so anchoring it at the
-    // stack top keeps the heap above the stack. Setting sz = sp (mid-stack)
-    // made the first malloc hand back stack memory and clobber argv. Mirrors
-    // userinit.
-    inner.sz = user_stack_top;
-    
-    // Set up trapframe for user entry. a1 carries argv; a0 (argc) is delivered
-    // as this syscall's RETURN VALUE, because the dispatcher writes the return
-    // value into tf.a0 after we return — so setting tf.a0 here would just be
-    // overwritten. This matches xv6, where exec returns argc for exactly this
-    // reason.
-    let tf = unsafe { &mut *inner.trapframe };
-    tf.epc = entry_point;
-    tf.sp = sp;
-    tf.a1 = argv_ptr; // argv pointer
+    // Commit the new image under p.lock, then RELEASE p.lock before fileclose.
+    // fileclose -> iput -> begin_op acquires LOG.lock, and the log's end_op path
+    // (wakeup) takes proc locks while holding LOG.lock; holding p.lock across
+    // fileclose here inverts that order (p.lock -> LOG.lock) and deadlocks under
+    // SMP against a concurrent commit. xv6 likewise closes the ELF file only
+    // after the image swap, not while holding a process lock.
+    {
+        let mut inner = p.lock();
+
+        // Free old page table
+        if let Some(mut old_pt) = inner.pagetable.take() {
+            crate::mm::page_table::uvmfree(&mut old_pt, inner.sz);
+        }
+
+        inner.pagetable = Some(new_pt);
+        // sz must be the TOP of the stack region, not the current stack pointer:
+        // the user heap (sbrk/malloc) grows upward from sz, so anchoring it at the
+        // stack top keeps the heap above the stack. Setting sz = sp (mid-stack)
+        // made the first malloc hand back stack memory and clobber argv. Mirrors
+        // userinit.
+        inner.sz = user_stack_top;
+
+        // Set up trapframe for user entry. a1 carries argv; a0 (argc) is delivered
+        // as this syscall's RETURN VALUE, because the dispatcher writes the return
+        // value into tf.a0 after we return — so setting tf.a0 here would just be
+        // overwritten. This matches xv6, where exec returns argc for exactly this
+        // reason.
+        let tf = unsafe { &mut *inner.trapframe };
+        tf.epc = entry_point;
+        tf.sp = sp;
+        tf.a1 = argv_ptr; // argv pointer
+    } // p.lock released here, before the transaction in fileclose.
 
     crate::fs::fileclose(&file);
 
