@@ -579,21 +579,21 @@ fn iget_locked(dev: u32, inum: u32) -> &'static Inode {
         }
     }
     
-    // Find empty slot
+    // Recycle the first slot with no in-memory references. xv6 reuses any
+    // ref==0 inode here, NOT only typ==None ones: a still-linked file that was
+    // opened and closed keeps `typ` set but drops to refcnt 0 (iput only clears
+    // typ when nlink==0). Reusing only typ==None slots leaked one itable entry
+    // per distinct file ever touched, eventually panicking here (e.g. grind).
     for i in 0..NINODE {
         if let Some(inode) = &cache.inodes[i] {
-            // Check typ without holding guard across unsafe block
-            let typ = {
-                let inner = inode.inner();
-                inner.typ
-            };
-            if typ == InodeType::None {
+            if inode.refcnt.load(Ordering::Acquire) == 0 {
                 unsafe {
                     let inode_ptr = inode as *const Inode as *mut Inode;
                     (*inode_ptr).dev = dev;
                     (*inode_ptr).inum = inum;
                     (*inode_ptr).refcnt.store(1, Ordering::Release);
-                    // Use spinlock directly to set typ
+                    // Clear typ so iget reloads this (possibly different) inode
+                    // from disk instead of trusting the recycled slot's data.
                     (*inode_ptr).spinlock.acquire().typ = InodeType::None;
                 }
                 return unsafe { &*(inode as *const Inode) };
