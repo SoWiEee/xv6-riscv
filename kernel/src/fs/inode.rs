@@ -673,21 +673,28 @@ pub fn iput(ip: &Inode) {
         // xv6 iput does. Caller is already inside a log transaction.
         ip.lock();
         ip.truncate();
-        let mut cache = ICACHE.acquire();
-        for i in 0..NINODE {
-            if let Some(inode) = &cache.inodes[i] {
-                if core::ptr::eq(inode, ip) {
-                    unsafe {
-                        let inode_ptr = inode as *const Inode as *mut Inode;
-                        let mut inner = (*inode_ptr).inner();
-                        inner.typ = InodeType::None;
-                        inner.size = 0;
-                        inner.addrs = [0; NADDR];
+        {
+            let cache = ICACHE.acquire();
+            for i in 0..NINODE {
+                if let Some(inode) = &cache.inodes[i] {
+                    if core::ptr::eq(inode, ip) {
+                        unsafe {
+                            let inode_ptr = inode as *const Inode as *mut Inode;
+                            let mut inner = (*inode_ptr).inner();
+                            inner.typ = InodeType::None;
+                            inner.size = 0;
+                            inner.addrs = [0; NADDR];
+                        }
+                        break;
                     }
-                    break;
                 }
             }
-        }
+        } // release the ICACHE spinlock before iupdate's bread/log_write.
+        // Persist type=0 to the on-disk inode so ialloc can reclaim this slot.
+        // xv6: itrunc(ip); ip->type = 0; iupdate(ip). Without this the on-disk
+        // typ stayed non-zero forever, leaking one disk inode per unlinked file
+        // until ialloc exhausted them (grind case 21: "create c failed").
+        iupdate(ip);
         ip.unlock();
     }
 }
