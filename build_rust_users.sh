@@ -23,6 +23,7 @@ cp target/riscv64imac-unknown-none-elf/release/ln user/_ln
 cp target/riscv64imac-unknown-none-elf/release/zombie user/_zombie
 cp target/riscv64imac-unknown-none-elf/release/forktest user/_forktest
 cp target/riscv64imac-unknown-none-elf/release/stressfs user/_stressfs
+cp target/riscv64imac-unknown-none-elf/release/usertests user/_usertests
 cp target/riscv64imac-unknown-none-elf/release/grind user/_grind
 cp target/riscv64imac-unknown-none-elf/release/logstress user/_logstress
 cp target/riscv64imac-unknown-none-elf/release/sync user/_sync
