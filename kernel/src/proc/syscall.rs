@@ -748,7 +748,12 @@ fn sys_chdir(path: usize) -> isize {
     let old = inner.cwd.replace(inode as *const Inode);
     drop(inner);
     if let Some(old_ptr) = old {
+        // Releasing the previous cwd may drop its last link (e.g. it was
+        // unlink()ed while it was our cwd), so iput can free the inode — which
+        // writes via the log. Wrap it in a transaction like xv6 sys_chdir.
+        crate::fs::begin_op();
         crate::fs::iput(unsafe { &*old_ptr });
+        crate::fs::end_op();
     }
     0
 }
