@@ -223,7 +223,17 @@ pub fn sched() {
     }
     let ctx_ptr = &mut inner.context as *mut Context;
     let cpu = crate::proc::mycpu();
+    // Save/restore `intena` around the switch. `noff`/`intena` are per-CPU, but a
+    // process may resume on a DIFFERENT hart than it left from, whose `intena`
+    // belongs to that hart's scheduler (typically true). Without carrying our own
+    // value across the switch, the pop_off that eventually releases p.lock would
+    // restore the wrong interrupt-enable state, re-enabling interrupts in a
+    // window the process assumes they are off (e.g. between yield returning and
+    // the trap frame being restored in kerneltrap/kernelvec) — a timer there
+    // re-enters on the same kstack and smashes a saved ra. Mirrors xv6 `sched()`.
+    let saved_intena = cpu.intena;
     crate::arch::trap::context_switch(unsafe { &mut *ctx_ptr }, &cpu.context, 0);
+    crate::proc::mycpu().intena = saved_intena;
 }
 
 pub fn scheduler_started() -> bool {
