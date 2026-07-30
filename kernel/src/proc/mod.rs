@@ -48,11 +48,22 @@ pub fn mycpu() -> &'static mut Cpu {
 }
 
 pub fn current_process() -> &'static Proc {
-    mycpu().proc.expect("no current process")
+    current_process_opt().expect("no current process")
 }
 
+/// Return the process running on the current CPU, if any.
+///
+/// Interrupts MUST be disabled across the `mycpu()` read and the `proc` load:
+/// `mycpu()` reads `tp` to index the per-CPU array, and if a timer preempts and
+/// migrates this process to another hart between reading `tp` and reading
+/// `cpu.proc`, we would read the OLD cpu's `proc` (which the scheduler cleared
+/// to `None` on migration) — the "no current process" panic, and, via other
+/// `mycpu()` writers, corrupted per-CPU state. Mirrors xv6 `myproc()`.
 pub fn current_process_opt() -> Option<&'static Proc> {
-    mycpu().proc
+    crate::sync::spinlock::push_off();
+    let p = mycpu().proc;
+    crate::sync::spinlock::pop_off();
+    p
 }
 
 static mut SCHEDULER_STARTED: bool = false;
