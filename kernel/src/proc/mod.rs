@@ -171,8 +171,8 @@ pub fn userinit() {
     // First run starts at forkret (kernel code), which calls usertrapret to
     // enter user mode via the trampoline.
     inner.context.ra = crate::arch::trap::forkret as usize;
-    inner.context.sp = inner.kstack + crate::arch::paging::PAGE_SIZE;
-    
+    inner.context.sp = inner.kstack + crate::proc::scheduler::KSTACK_SIZE;
+
     inner.pid = 1;
     inner.state = ProcState::Runnable;
     inner.name = *b"init\0\0\0\0\0\0\0\0\0\0\0\0";

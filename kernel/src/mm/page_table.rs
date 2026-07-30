@@ -259,6 +259,14 @@ fn map_kernel(pt: &mut PageTable) {
         pt.map(VirtAddr(addr), PhysAddr(addr), PTE_R | PTE_W).unwrap();
     }
 
+    // Punch out the per-proc kernel-stack guard pages. Each kstack slot reserves
+    // one page below the usable stack; unmapping it (without freeing — the page
+    // belongs to the static KSTACKS array) turns a kernel stack overflow into a
+    // precise store page fault instead of silent corruption of a neighbour page.
+    for i in 0..crate::proc::process::NPROC {
+        pt.unmap_nofree(VirtAddr(crate::proc::scheduler::kstack_guard_addr(i)));
+    }
+
     // Trampoline - map the page containing uservec to TRAMPOLINE virtual address
     let uservec_addr = uservec as usize;
     let trampoline_paddr = PhysAddr((uservec_addr / PAGE_SIZE) * PAGE_SIZE);

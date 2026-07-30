@@ -188,7 +188,7 @@ fn sys_fork() -> isize {
     // scheduler would `ret` to address 0.
     npinner.context = crate::arch::trap::Context::new();
     npinner.context.ra = crate::arch::trap::forkret as usize;
-    npinner.context.sp = npinner.kstack + crate::arch::paging::PAGE_SIZE;
+    npinner.context.sp = npinner.kstack + crate::proc::scheduler::KSTACK_SIZE;
 
     drop(npinner);
     drop(pinner);

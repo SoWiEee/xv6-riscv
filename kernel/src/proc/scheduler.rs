@@ -13,22 +13,63 @@ pub static mut SCHEDULER_STARTED: bool = false;
 
 static NEXT_PID: Mutex<usize> = Mutex::new(1);
 
+// --- Deterministic, guard-paged kernel stacks -----------------------------
+//
+// Kernel stacks live in a fixed static array (one slot per process index)
+// instead of being handed out by the frame allocator. Two reasons:
+//   1. Deterministic addresses — a given proc slot always has the same kstack
+//      VA, so a hardware watchpoint / crash post-mortem can name the victim.
+//   2. Guard page — each slot reserves one unmapped page *below* the usable
+//      stack. A kernel stack overflow then faults precisely (store page fault,
+//      sepc = the offending instruction) instead of silently smashing whatever
+//      physical page happens to sit next to an alloc_page()'d stack.
+//
+// Layout of slot `i` (low -> high address):
+//   [ guard page (unmapped) ][ KSTACK_PAGES usable stack pages ]
+// The stack pointer starts at the top and grows down toward the guard.
+pub const KSTACK_PAGES: usize = 1; // usable stack pages (matches C xv6)
+pub const KSTACK_GUARD_PAGES: usize = 1;
+const KSTACK_SLOT_PAGES: usize = KSTACK_PAGES + KSTACK_GUARD_PAGES;
+pub const KSTACK_SIZE: usize = KSTACK_PAGES * crate::arch::paging::PAGE_SIZE;
+const KSTACK_SLOT_SIZE: usize = KSTACK_SLOT_PAGES * crate::arch::paging::PAGE_SIZE;
+
+#[repr(C, align(4096))]
+struct KStacks([[u8; KSTACK_SLOT_SIZE]; NPROC]);
+static mut KSTACKS: KStacks = KStacks([[0u8; KSTACK_SLOT_SIZE]; NPROC]);
+
+/// Base (lowest) address of proc slot `i`'s kstack region, i.e. the guard page.
+fn kstack_slot_base(i: usize) -> usize {
+    (&raw const KSTACKS as usize) + i * KSTACK_SLOT_SIZE
+}
+
+/// Base of the *usable* kernel stack for proc slot `i` (just above the guard).
+/// `context.sp` / `kernel_sp` = this + KSTACK_SIZE (the stack top).
+fn kstack_base(i: usize) -> usize {
+    kstack_slot_base(i) + KSTACK_GUARD_PAGES * crate::arch::paging::PAGE_SIZE
+}
+
+/// Address of the guard page for proc slot `i` (to be left unmapped).
+pub fn kstack_guard_addr(i: usize) -> usize {
+    kstack_slot_base(i)
+}
+
+/// If `addr` falls inside the static kstack array, return `(slot, offset)`.
+/// Used by the kerneltrap forensic dump to name which proc's stack an address
+/// belongs to. `offset < KSTACK_GUARD_PAGES*PAGE_SIZE` means it's in the guard.
+pub fn kstack_locate(addr: usize) -> Option<(usize, usize)> {
+    let base = &raw const KSTACKS as usize;
+    let total = NPROC * KSTACK_SLOT_SIZE;
+    if addr < base || addr >= base + total {
+        return None;
+    }
+    let off = addr - base;
+    Some((off / KSTACK_SLOT_SIZE, off % KSTACK_SLOT_SIZE))
+}
+
 fn next_pid() -> usize {
     let mut pid = NEXT_PID.lock();
     *pid += 1;
     *pid
-}
-
-fn alloc_kernel_stack() -> usize {
-    let page = alloc_page().expect("alloc_kernel_stack: out of memory");
-    page.to_paddr().0
-}
-
-fn free_kernel_stack(kstack: usize) {
-    if kstack != 0 {
-        let ppn = crate::mm::address::PhysPageNum::new(kstack >> 12);
-        free_page(ppn);
-    }
 }
 
 pub fn procinit() {
@@ -40,12 +81,13 @@ pub fn procinit() {
 }
 
 pub fn alloc_proc() -> Option<&'static Proc> {
-    for p in &PROCS {
+    for (i, p) in PROCS.iter().enumerate() {
         let mut inner = p.lock();
         if inner.state == ProcState::Unused {
             inner.state = ProcState::Used;
             inner.pid = next_pid();
-            inner.kstack = alloc_kernel_stack();
+            // Fixed, guard-paged kstack slot for this proc index.
+            inner.kstack = kstack_base(i);
             // The trapframe needs its own page-aligned page so it can be mapped
             // at the fixed TRAPFRAME virtual address in the user page table.
             inner.trapframe = alloc_page()
@@ -74,10 +116,9 @@ pub fn free_proc(p: &Proc) {
     let mut inner = p.lock();
     inner.state = ProcState::Unused;
     inner.pid = 0;
-    if inner.kstack != 0 {
-        free_kernel_stack(inner.kstack);
-        inner.kstack = 0;
-    }
+    // kstack is a fixed static slot tied to the proc index — never freed to the
+    // frame allocator. Just drop the reference; alloc_proc re-derives it.
+    inner.kstack = 0;
     // Free the user address space: uvmfree unmaps and frees the user pages in
     // [0, sz); dropping the page table then frees the page-table structure
     // (Drop clears the trampoline/trapframe leaves without freeing them).

@@ -169,7 +169,7 @@ pub fn usertrapret(p: &'static crate::proc::process::Proc) -> ! {
     // Kernel state uservec restores on the next trap from this process.
     let tf = unsafe { &mut *tf_ptr };
     tf.kernel_satp = PhysPageNum::new(r_satp()); // full kernel satp value
-    tf.kernel_sp = kstack + crate::arch::paging::PAGE_SIZE;
+    tf.kernel_sp = kstack + crate::proc::scheduler::KSTACK_SIZE;
     tf.kernel_trap = usertrap as usize;
     tf.kernel_hartid = r_tp();
 
@@ -276,6 +276,83 @@ pub extern "C" fn forkret() -> ! {
 
 /// Kernel mode trap handler.
 /// 
+/// Dump the kernel stack around `sp` at the point of a fatal kerneltrap, tagging
+/// each word so the SMP saved-ra corruption can be diagnosed from the serial log
+/// alone. `garbage` is the faulting sepc (the value some `ret` jumped to).
+fn forensic_stack_dump(sp: usize, garbage: usize) {
+    use crate::arch::console::printk;
+    unsafe extern "C" {
+        fn etext();
+    }
+    let text_lo = crate::arch::asm::KERNBASE;
+    let text_hi = etext as usize;
+
+    // kerneltrap frame is 96 bytes; kernelvec pushed a 256-byte register block
+    // below it. So the fault-time register file is at [sp+96, sp+352) and the
+    // fault-time sp (what the interrupted code was running on) is sp+352.
+    let kv = sp + 96;
+    let fault_ra = unsafe { core::ptr::read_volatile((kv + 0) as *const usize) };
+    let fault_sp = sp + 352;
+
+    // Which proc slot owns this stack?
+    let start_slot = match crate::proc::scheduler::kstack_locate(sp) {
+        Some((slot, off)) => {
+            printk(format_args!(
+                "FORENSIC sp={:#x} slot={} off={:#x} fault_sp={:#x} fault_ra={:#x} garbage_sepc={:#x}\n",
+                sp, slot, off, fault_sp, fault_ra, garbage
+            ));
+            Some(slot)
+        }
+        None => {
+            printk(format_args!(
+                "FORENSIC sp={:#x} NOT in any kstack (!) fault_sp={:#x} fault_ra={:#x} garbage={:#x}\n",
+                sp, fault_sp, fault_ra, garbage
+            ));
+            None
+        }
+    };
+
+    // Decode the fault-time register file kernelvec saved (offsets match
+    // kernelvec's push order in asm.S).
+    let rd = |off: usize| unsafe { core::ptr::read_volatile((kv + off) as *const usize) };
+    let names: [(&str, usize); 12] = [
+        ("s0", 56), ("s1", 64), ("s2", 136), ("s3", 144), ("s4", 152), ("s5", 160),
+        ("s6", 168), ("s7", 176), ("s8", 184), ("s9", 192), ("s10", 200), ("s11", 208),
+    ];
+    printk(format_args!("FORENSIC regs: ra={:#x} tp={:#x} t0={:#x} a0={:#x}\n",
+        fault_ra, rd(24), rd(32), rd(72)));
+    for (nm, off) in names {
+        printk(format_args!("  {}={:#x}\n", nm, rd(off)));
+    }
+
+    // Dump from the FAULT-TIME sp upward (skipping our own kerneltrap/kernelvec
+    // frames), so we see the interrupted code's real call chain. Never read past
+    // this slot's top (the next slot's guard page is unmapped). Tag each word:
+    // CODE (a plausible return address), KSTK (points into a kernel stack), GARB
+    // (equals the faulting sepc). The frame whose saved-ra slot is missing/GARB
+    // is the corruption victim; the CODE entries name the surrounding callers.
+    for i in 0..96usize {
+        let a = fault_sp + i * 8;
+        // Stop before leaving the starting slot (avoids the neighbour guard).
+        match (start_slot, crate::proc::scheduler::kstack_locate(a)) {
+            (Some(s), Some((sl, _))) if sl == s => {}
+            (None, _) if a >= text_lo => {}
+            _ => break,
+        }
+        let v = unsafe { core::ptr::read_volatile(a as *const usize) };
+        let mut tag = "    ";
+        if v == garbage && garbage != 0 {
+            tag = "GARB";
+        } else if v >= text_lo && v < text_hi {
+            tag = "CODE";
+        } else if crate::proc::scheduler::kstack_locate(v).is_some() {
+            tag = "KSTK";
+        }
+        printk(format_args!("  [{:#x}] = {:#018x} {}\n", a, v, tag));
+    }
+    printk(format_args!("FORENSIC end\n"));
+}
+
 /// Called from `kernelvec` trampoline. Handles timer interrupts and device interrupts.
 /// Panics on unexpected traps.
 #[unsafe(no_mangle)]
@@ -293,7 +370,13 @@ pub extern "C" fn kerneltrap() {
     
     let dev = crate::arch::interrupt::devintr();
     if dev == 0 {
-        crate::arch::console::printk(format_args!("kerneltrap: scause={:#x} sepc={:#x} stval={:#x}\n", scause, r_sepc(), r_stval()));
+        let gsepc = r_sepc();
+        crate::arch::console::printk(format_args!("kerneltrap: scause={:#x} sepc={:#x} stval={:#x}\n", scause, gsepc, r_stval()));
+        // Forensic dump — only on the already-dying path, so it adds nothing to
+        // normal execution (won't perturb the SMP timing race we're chasing).
+        let cur_sp: usize;
+        unsafe { core::arch::asm!("mv {}, sp", out(reg) cur_sp, options(nomem, nostack)); }
+        forensic_stack_dump(cur_sp, gsepc);
         panic!("kerneltrap");
     }
     
