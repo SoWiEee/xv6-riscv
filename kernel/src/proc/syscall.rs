@@ -381,15 +381,36 @@ fn sys_read(fd: usize, addr: usize, n: usize) -> isize {
     let pagetable = inner.pagetable.clone();
     drop(inner);
 
-    // Translate user address
+    // Copy into the user buffer PAGE BY PAGE. Consecutive virtual pages map to
+    // NON-contiguous physical frames, so the old single `translate(addr)` +
+    // `from_raw_parts_mut(pa, n)` wrote `n` bytes contiguously from the first
+    // frame — running straight off its end into whatever unrelated physical page
+    // the allocator happened to place next (another proc's kernel/user page, a
+    // page table, ...). That silent cross-page overwrite was the "user-sp drift"
+    // corruption: a multi-page `read` clobbered a saved return address elsewhere
+    // in RAM. Translate each page-bounded segment separately (xv6 copyout).
     let pt = pagetable.as_ref().unwrap();
-    let va = crate::mm::address::VirtAddr(addr);
-    if let Some(pa) = pt.translate(va) {
-        let dst = unsafe { core::slice::from_raw_parts_mut(pa.0 as *mut u8, n) };
-        let nread = fileread(&f, dst);
-        return nread as isize;
+    let ps = crate::arch::paging::PAGE_SIZE;
+    // Preserve the old contract: a wholly untranslatable buffer returns -1.
+    if pt.translate(crate::mm::address::VirtAddr(addr)).is_none() {
+        return -1;
     }
-    -1
+    let mut done = 0usize;
+    while done < n {
+        let cur = addr + done;
+        let pa = match pt.translate(crate::mm::address::VirtAddr(cur)) {
+            Some(pa) => pa,
+            None => break,
+        };
+        let seg = core::cmp::min(ps - (cur % ps), n - done);
+        let dst = unsafe { core::slice::from_raw_parts_mut(pa.0 as *mut u8, seg) };
+        let r = fileread(&f, dst);
+        done += r;
+        if r < seg {
+            break; // EOF, console line boundary, pipe drain, or error
+        }
+    }
+    done as isize
 }
 
 fn sys_write(fd: usize, addr: usize, n: usize) -> isize {
@@ -406,15 +427,30 @@ fn sys_write(fd: usize, addr: usize, n: usize) -> isize {
     let pagetable = inner.pagetable.clone();
     drop(inner);
 
-    // Translate user address
+    // Copy FROM the user buffer PAGE BY PAGE — same non-contiguous-frame hazard
+    // as sys_read (see there). The old single-translate read `n` bytes past the
+    // first physical frame into unrelated memory.
     let pt = pagetable.as_ref().unwrap();
-    let va = crate::mm::address::VirtAddr(addr);
-    if let Some(pa) = pt.translate(va) {
-        let src = unsafe { core::slice::from_raw_parts(pa.0 as *const u8, n) };
-        let nwritten = filewrite(&f, src);
-        return nwritten as isize;
+    let ps = crate::arch::paging::PAGE_SIZE;
+    if pt.translate(crate::mm::address::VirtAddr(addr)).is_none() {
+        return -1;
     }
-    -1
+    let mut done = 0usize;
+    while done < n {
+        let cur = addr + done;
+        let pa = match pt.translate(crate::mm::address::VirtAddr(cur)) {
+            Some(pa) => pa,
+            None => break,
+        };
+        let seg = core::cmp::min(ps - (cur % ps), n - done);
+        let src = unsafe { core::slice::from_raw_parts(pa.0 as *const u8, seg) };
+        let r = filewrite(&f, src);
+        done += r;
+        if r < seg {
+            break; // pipe full/closed, disk full, or error
+        }
+    }
+    done as isize
 }
 
 fn sys_close(fd: usize) -> isize {
