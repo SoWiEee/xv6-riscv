@@ -205,11 +205,13 @@ pub fn virtio_init() {
 }
 
 /// Block buffer for virtio read/write operations.
-/// 
-/// Contains a 512-byte sector buffer and the sector number.
+///
+/// `blockno` is the starting 512-byte sector; `data` is transferred in a single
+/// request, so a 1024-byte buffer moves two consecutive sectors at once (the FS
+/// block size). virtio-blk transfers `data.len() / 512` sectors per request.
 pub struct Block {
     pub blockno: u64,
-    pub data: [u8; 512],
+    pub data: [u8; 1024],
 }
 
 /// Read or write a block via virtio.
@@ -255,10 +257,10 @@ pub fn virtio_rw(block: &mut Block, write: bool) {
         (*desc.add(0)).flags = VIRTQ_DESC_F_NEXT;
         (*desc.add(0)).next = 1;
 
-        // desc[1]: 512-byte data buffer. Device-WRITABLE on read, device-readable
-        // on write. Chains to status.
+        // desc[1]: data buffer (block.data.len() bytes = that many /512 sectors).
+        // Device-WRITABLE on read, device-readable on write. Chains to status.
         (*desc.add(1)).addr = buf_pa;
-        (*desc.add(1)).len = 512;
+        (*desc.add(1)).len = block.data.len() as u32;
         (*desc.add(1)).flags = VIRTQ_DESC_F_NEXT | if write { 0 } else { VIRTQ_DESC_F_WRITE };
         (*desc.add(1)).next = 2;
 

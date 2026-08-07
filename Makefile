@@ -151,6 +151,7 @@ UPROGS=\
 	$U/_forkbench\
 	$U/_execbench\
 	$U/_nop\
+	$U/_fsbench\
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)

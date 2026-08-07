@@ -317,33 +317,20 @@ pub fn bunpin(buf_ref: &BufRef) {
     }
 }
 
-/// Read a 1024-byte block from disk (2x 512-byte sectors).
+/// Read a 1024-byte block from disk in one virtio request (2 sectors at once).
 fn read_block(_dev: u32, blockno: u32, dst: &mut [u8]) {
-    // Virtio uses 512-byte sectors; a 1024-byte block spans 2 sectors.
-    for i in 0..2usize {
-        let sector = (blockno as u64) * 2 + i as u64;
-        let mut block = crate::drivers::virtio::Block {
-            blockno: sector,
-            data: [0u8; 512],
-        };
-        virtio_rw(&mut block, false); // false = read
-        let start = i * 512;
-        let end = (i + 1) * 512;
-        dst[start..end].copy_from_slice(&block.data);
-    }
+    // A 1024-byte FS block = 2 consecutive 512-byte sectors starting at
+    // blockno*2. One request moving 1024 bytes transfers both, halving the
+    // virtio round-trips (lock + descriptor setup + notify + poll) vs a
+    // per-sector loop.
+    let mut block = crate::drivers::virtio::Block { blockno: (blockno as u64) * 2, data: [0u8; 1024] };
+    virtio_rw(&mut block, false); // false = read
+    dst[..1024].copy_from_slice(&block.data);
 }
 
-/// Write a 1024-byte block to disk (2x 512-byte sectors).
+/// Write a 1024-byte block to disk in one virtio request (2 sectors at once).
 fn write_block(_dev: u32, blockno: u32, src: &[u8]) {
-    for i in 0..2usize {
-        let sector = (blockno as u64) * 2 + i as u64;
-        let mut block = crate::drivers::virtio::Block {
-            blockno: sector,
-            data: [0u8; 512],
-        };
-        let start = i * 512;
-        let end = (i + 1) * 512;
-        block.data.copy_from_slice(&src[start..end]);
-        virtio_rw(&mut block, true); // true = write
-    }
+    let mut block = crate::drivers::virtio::Block { blockno: (blockno as u64) * 2, data: [0u8; 1024] };
+    block.data.copy_from_slice(&src[..1024]);
+    virtio_rw(&mut block, true); // true = write
 }
