@@ -171,6 +171,22 @@ machinery are pulled in even for a trivial program.
 - Wall-clock under QEMU is emulation-bound; the icount metric is the
   emulation-independent one.
 
+## Kernel optimizations
+
+- **Batched disk I/O** (`read_block`/`write_block`): a 1024-byte FS block is two
+  consecutive 512-byte sectors, and virtio-blk transfers `buffer_len / 512`
+  sectors per request, so one 1024-byte request moves the whole block instead of
+  two per-sector round-trips (each a device-lock acquire + descriptor setup +
+  notify + poll). Measured with `user/fsbench` (N 1 KiB writes, difference
+  method, -smp 1): **31,556 → 24,777 µs per block write, ~21% faster**; usertests
+  stay 17/17 on -smp 1 and -smp 3.
+- **Tried and reverted:** kernel fat-LTO + `codegen-units=1`. No measurable
+  change — `getpid`/`fork` are dominated by the assembly trap path (register
+  save/restore, the trampoline `satp` switch, and the `sfence.vma` TLB flush),
+  not Rust call overhead, so inlining the small cross-module accessors moves
+  nothing. Wall-clock noise (~7% on `fork`) and coarse icount ticks put
+  sub-7% kernel micro-optimizations below the measurement floor here.
+
 ## Reproduce
 
 ```bash
