@@ -12,7 +12,6 @@ pub mod proc;
 pub mod fs;
 pub mod drivers;
 pub mod syscall;
-pub mod trap;
 pub mod elf;
 
 use core::panic::PanicInfo;
