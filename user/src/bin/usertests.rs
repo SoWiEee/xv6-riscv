@@ -561,8 +561,6 @@ fn reparent2(s: &str) {
 }
 
 // two processes write to the same file descriptor: is the offset shared?
-// (Ported but not yet in the suite — see the QUICKTESTS note.)
-#[allow(dead_code)]
 fn sharedfd(s: &str) {
     const N: usize = 1000;
     const SZ: usize = 10;
@@ -652,10 +650,7 @@ static QUICKTESTS: &[(TestFn, &str)] = &[
     (reparent2, "reparent2"),
     (killstatus, "killstatus"),
     (preempt, "preempt"),
-    // NOTE: `sharedfd` is ported (below) but omitted from the suite: it exposes
-    // a SEPARATE, still-open bug (the shared file-offset is read/written
-    // non-atomically in filewrite, so two procs sharing an fd race on `off`),
-    // unrelated to the cross-page fix. Re-add once that offset race is fixed.
+    (sharedfd, "sharedfd"),
 ];
 
 /// Run one test in its own child; returns true if the child exited 0.

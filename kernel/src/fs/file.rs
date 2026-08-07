@@ -236,9 +236,9 @@ pub fn fileread(f: &File, dst: &mut [u8]) -> usize {
     // fileclose (`dec_ref` locks FileInner). That is a spin-forever deadlock
     // with interrupts off. xv6 likewise never holds the file struct lock across
     // pipe/inode I/O.
-    let (readable, typ, pipe, inode, off) = {
+    let (readable, typ, pipe, inode) = {
         let inner = f.inner();
-        (inner.readable, inner.typ, inner.pipe.clone(), inner.inode, inner.off)
+        (inner.readable, inner.typ, inner.pipe.clone(), inner.inode)
     };
     if !readable {
         return 0;
@@ -251,11 +251,18 @@ pub fn fileread(f: &File, dst: &mut [u8]) -> usize {
         },
         FileType::Inode => match inode {
             Some(inode) => {
-                // readi requires the caller to hold the inode lock.
+                // readi requires the caller to hold the inode lock. Read AND
+                // advance the shared file offset while holding it, so two
+                // processes sharing this fd (via fork) serialize on the inode
+                // sleeplock and each sees the other's advance — mirrors C xv6
+                // fileread (ilock; readi(f->off); f->off += r; iunlock).
                 inode.lock();
+                let off = f.off();
                 let n = inode.read(dst, off, dst.len());
+                if n > 0 {
+                    f.set_off(off + n);
+                }
                 inode.unlock();
-                f.set_off(off + n);
                 n
             }
             None => 0,
@@ -271,9 +278,9 @@ pub fn fileread(f: &File, dst: &mut [u8]) -> usize {
 pub fn filewrite(f: &File, src: &[u8]) -> usize {
     // Release the FileInner lock before any blocking call (see fileread for why
     // holding it across pipe/inode I/O deadlocks a shared File).
-    let (writable, typ, pipe, inode, off) = {
+    let (writable, typ, pipe, inode) = {
         let inner = f.inner();
-        (inner.writable, inner.typ, inner.pipe.clone(), inner.inode, inner.off)
+        (inner.writable, inner.typ, inner.pipe.clone(), inner.inode)
     };
     if !writable {
         return 0;
@@ -292,25 +299,28 @@ pub fn filewrite(f: &File, src: &[u8]) -> usize {
                 // blocks, halved for the double-buffering slack.
                 let max = ((crate::fs::MAXOPBLOCKS - 1 - 1 - 2) / 2) * crate::fs::BSIZE;
                 let mut done = 0;
-                let mut cur_off = off;
                 while done < src.len() {
                     let n1 = core::cmp::min(src.len() - done, max);
                     // begin_op BEFORE ilock (never sleep for log space holding an
-                    // inode lock); writei runs under the inode lock.
+                    // inode lock); writei runs under the inode lock. Read AND
+                    // advance the shared file offset inside the same inode-lock
+                    // critical section so two processes sharing this fd append
+                    // sequentially instead of clobbering each other — mirrors
+                    // C xv6 filewrite (ilock; writei(f->off); f->off += r; iunlock).
                     crate::fs::begin_op();
                     inode.lock();
+                    let cur_off = f.off();
                     let r = inode.write(&src[done..done + n1], cur_off, n1);
+                    if r > 0 {
+                        f.set_off(cur_off + r);
+                    }
                     inode.unlock();
                     crate::fs::end_op();
-                    if r > 0 {
-                        cur_off += r;
-                    }
                     done += r;
                     if r != n1 {
                         break; // short write: error or disk full
                     }
                 }
-                f.set_off(cur_off);
                 done
             }
             None => 0,
