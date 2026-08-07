@@ -15,7 +15,7 @@ import time
 import pexpect
 
 
-def run_once(kernel, image, n, smp, icount, timeout):
+def run_once(kernel, image, n, smp, icount, timeout, PROG):
     cmd = [
         "qemu-system-riscv64", "-machine", "virt", "-bios", "none",
         "-kernel", kernel, "-m", "128M", "-smp", str(smp), "-nographic",
@@ -30,8 +30,8 @@ def run_once(kernel, image, n, smp, icount, timeout):
         child.expect(r"\$ ")
         time.sleep(0.2)
         t0 = time.monotonic()
-        child.sendline(f"syscallbench {n}")
-        child.expect(r"SYSCALLBENCH n=(\d+) ticks=(\d+) acc=")
+        child.sendline(f"{PROG} {n}")
+        child.expect(rf"{PROG.upper()} n=(\d+) ticks=(\d+)")
         host_s = time.monotonic() - t0
         ticks = int(child.match.group(2))
         return host_s, ticks
@@ -46,6 +46,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--kernel", required=True, help="path to the kernel ELF")
     ap.add_argument("--image", required=True, help="path to the fs.img")
+    ap.add_argument("--prog", default="syscallbench",
+                    help="guest program to run; marker is its uppercase name")
     ap.add_argument("--n", type=int, default=1_000_000, help="base iteration count N")
     ap.add_argument("--reps", type=int, default=5, help="repetitions per N")
     ap.add_argument("--smp", type=int, default=1)
@@ -59,7 +61,7 @@ def main():
     for n in (args.n, 2 * args.n):
         vals = []
         for r in range(args.reps):
-            host_s, ticks = run_once(args.kernel, args.image, n, args.smp, args.icount, args.timeout)
+            host_s, ticks = run_once(args.kernel, args.image, n, args.smp, args.icount, args.timeout, args.prog)
             v = ticks if args.icount else host_s
             vals.append(v)
             print(f"  N={n:>10} rep{r} host_s={host_s:.4f} ticks={ticks}")

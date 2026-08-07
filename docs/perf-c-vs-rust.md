@@ -4,18 +4,20 @@ A first, deliberately narrow comparison between the original C kernel (root
 `Makefile` build, compiled `-O`) and the Rust rewrite (`rust-rewrite`, release
 `-O3`-level). Measured on QEMU 8.2.2 `-machine virt`, `-smp 1`, same host.
 
-> **This compares two implementations, not two languages.** The workload is a
-> tight `getpid()` loop — the cheapest syscall — so it isolates the trap
-> entry / dispatch / exit path. It says nothing about `fork`/`exec`/FS, where
-> the Rust port is currently *slower* by construction (see
-> [Caveats](#caveats)).
+> **This compares two implementations, not two languages.** Two workloads: a
+> tight `getpid()` loop (cheapest syscall — isolates trap entry/dispatch/exit)
+> and a `fork()`+`wait()` loop (a heavy path — address-space copy, proc alloc,
+> scheduler round-trips, `uvmfree`).
 
-## Benchmark program
+## Benchmark programs
 
-`user/syscallbench.c` and `user/src/bin/syscallbench.rs` are kept structurally
-identical: read `N` from argv, bracket an `N`-iteration `getpid()` loop with
-`uptime()`, print `SYSCALLBENCH n=<N> ticks=<Δ> acc=<fold>`. `acc` folds every
-return so the loop can't be elided.
+- **syscall latency:** `user/syscallbench.c` + `user/src/bin/syscallbench.rs` —
+  read `N` from argv, bracket an `N`-iteration `getpid()` loop with `uptime()`,
+  print `SYSCALLBENCH n=<N> ticks=<Δ> acc=<fold>`. `acc` folds every return so
+  the loop can't be elided.
+- **fork heavy path:** `user/forkbench.c` + `user/src/bin/forkbench.rs` —
+  `N` iterations of `fork()` then `wait()`, child `exit(0)`s immediately; print
+  `FORKBENCH n=<N> ticks=<Δ>`.
 
 The host harness (`bench/syscallbench_harness.py`) boots QEMU, waits for the
 `$ ` shell prompt, runs `syscallbench N`, and times send → marker.
@@ -55,6 +57,24 @@ Rust executes ~35% fewer instructions per `getpid` (0.65×).
 per software tick); the absolute number is rough — the 0.65 ratio is the robust
 result.</sub>
 
+### Heavy path — `fork()` + `wait()`
+
+Difference method, `N` = 2000/4000. Host = median of 5; icount = deterministic
+(Rust identical across runs; C's two glitch tick reads discarded by the median).
+
+| Kernel | host µs / fork | icount ticks / fork | ≈ instructions / fork* |
+|--------|---------------:|--------------------:|-----------------------:|
+| C      | 949            | 0.0115              | ~1.15M                 |
+| Rust   | 731            | 0.0075              | ~0.75M                 |
+
+Rust `fork`+`wait` is ~23% faster (0.77×) and ~35% fewer instructions (0.65×) —
+the same instruction ratio as `getpid`. Notably, the Rust `forkbench` image is
+larger (text 12,498 vs 2,365 → a few more pages for `uvmcopy` to copy per
+`fork`), yet Rust still wins: `fork` cost is dominated by fixed overhead (proc
+alloc, two scheduler round-trips, trap save/restore, exit/reap), and Rust's path
+is leaner. The address-space port (compact `sz`) means `fork`/`exit` are *not* a
+Rust bottleneck.
+
 ### (C) Static size
 
 | Metric                     | C      | Rust    | Ratio |
@@ -62,6 +82,7 @@ result.</sub>
 | Kernel `.text`             | 30,760 | 131,072 | ~3.7× |
 | Kernel source lines        | 6,271  | 8,017   | 1.28× |
 | user `syscallbench` `.text`| 2,343  | 12,448  | 5.3×  |
+| user `forkbench` `.text`   | 2,365  | 12,498  | 5.3×  |
 
 Rust kernel `.text` includes ~16.7 KB of `include_bytes!`-embedded `init`.
 Kernel `.bss` (C 103 KB vs Rust 16.9 MB) is **not** comparable: Rust reserves a
@@ -77,13 +98,14 @@ machinery are pulled in even for a trivial program.
 
 ## Caveats
 
-- **`getpid` only.** This isolates the trap / dispatch / exit path. Heavier
-  paths (`fork`/`exec`/FS) also involve ELF loading, page copying, and disk
-  I/O, and were left out to keep the comparison clean — not because they are
-  known-slow. (The Rust port already uses xv6's compact address-space layout:
-  `sz` is program + guard + stack, so `uvmcopy`/`uvmfree` walk only the small
-  mapped range on `fork`/`exit`, not a ~2 GB gap. `Inode::lock` is a real
-  sleeplock, not a stub.)
+- **`getpid` and `fork` only.** These cover the trap/dispatch path and a
+  heavy proc/address-space path. FS-heavy workloads (`exec`, file I/O) add ELF
+  loading and disk I/O and are not covered here. The Rust port uses xv6's
+  compact address-space layout (`sz` = program + guard + stack), so
+  `uvmcopy`/`uvmfree` walk only the small mapped range on `fork`/`exit`, not a
+  ~2 GB gap; `Inode::lock` is a real sleeplock, not a stub.
+- **`fork` fairness.** Rust's `forkbench` image is ~5× larger, so its `fork`
+  copies a few more pages; Rust is still faster, so fixed overhead dominates.
 - Wall-clock under QEMU is emulation-bound; the icount metric is the
   emulation-independent one.
 
@@ -95,12 +117,16 @@ make fs.img && cp fs.img fs_c.img
 
 # Rust image:
 cargo build --release --target riscv64imac-unknown-none-elf -p xv6-user
-for b in init sh cat echo ls syscallbench; do \
+for b in init sh cat echo ls syscallbench forkbench; do \
   cp target/riscv64imac-unknown-none-elf/release/$b user/_$b; done
-./mkfs/mkfs fs_rust.img README user/_init user/_sh user/_cat user/_echo user/_ls user/_syscallbench
+./mkfs/mkfs fs_rust.img README user/_init user/_sh user/_cat user/_echo user/_ls \
+  user/_syscallbench user/_forkbench
 
-# Measure (difference method + icount):
+# Measure (difference method + optional --icount for deterministic ticks):
+RK=target/riscv64imac-unknown-none-elf/release/xv6-kernel
 python3 bench/syscallbench_harness.py --kernel kernel/kernel --image fs_c.img --n 1000000
-python3 bench/syscallbench_harness.py --kernel target/riscv64imac-unknown-none-elf/release/xv6-kernel \
-        --image fs_rust.img --n 1000000
+python3 bench/syscallbench_harness.py --kernel $RK --image fs_rust.img --n 1000000
+# Heavy path:
+python3 bench/syscallbench_harness.py --kernel kernel/kernel --image fs_c.img --prog forkbench --n 2000
+python3 bench/syscallbench_harness.py --kernel $RK --image fs_rust.img --prog forkbench --n 2000
 ```

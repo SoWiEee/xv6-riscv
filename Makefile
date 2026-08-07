@@ -148,6 +148,7 @@ UPROGS=\
 	$U/_sync\
 	$U/_test_leak_poc\
 	$U/_syscallbench\
+	$U/_forkbench\
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)
