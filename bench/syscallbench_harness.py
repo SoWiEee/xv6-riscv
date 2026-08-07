@@ -31,7 +31,10 @@ def run_once(kernel, image, n, smp, icount, timeout, PROG):
         time.sleep(0.2)
         t0 = time.monotonic()
         child.sendline(f"{PROG} {n}")
-        child.expect(rf"{PROG.upper()} n=(\d+) ticks=(\d+)")
+        # Require a trailing newline after the digits so pexpect waits for the
+        # whole number (a buffer split mid-number would otherwise capture a
+        # truncated tick value).
+        child.expect(rf"{PROG.upper()} n=(\d+) ticks=(\d+)[\r\n]")
         host_s = time.monotonic() - t0
         ticks = int(child.match.group(2))
         return host_s, ticks

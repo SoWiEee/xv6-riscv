@@ -75,6 +75,22 @@ alloc, two scheduler round-trips, trap save/restore, exit/reap), and Rust's path
 is leaner. The address-space port (compact `sz`) means `fork`/`exit` are *not* a
 Rust bottleneck.
 
+### Heavy path — `fork()` + `exec("nop")` + `wait()`
+
+`execbench` adds an `exec` of a do-nothing `nop` program (`user/nop.c` +
+`user/src/bin/nop.rs`) to the fork loop; the marginal `exec` cost is
+`execbench − forkbench`. Difference method, `N` = 500/1000, host = median of 5.
+
+| Kernel | host µs / iter (fork+exec+wait) | isolated exec (− fork) |
+|--------|--------------------------------:|-----------------------:|
+| C      | 3952                            | ~3003 µs               |
+| Rust   | 1845                            | ~1114 µs               |
+
+Rust `fork`+`exec`+`wait` is ~2.1× faster; isolated `exec` ~2.7× faster. (The
+icount pass had a harness read glitch on C's tick values — the regex now
+requires a trailing newline — so the wall-clock numbers are the reliable ones
+here.) So even the FS-touching `exec` path is not a Rust weakness.
+
 ### (C) Static size
 
 | Metric                     | C      | Rust    | Ratio |
@@ -88,6 +104,46 @@ Rust kernel `.text` includes ~16.7 KB of `include_bytes!`-embedded `init`.
 Kernel `.bss` (C 103 KB vs Rust 16.9 MB) is **not** comparable: Rust reserves a
 16 MB static `HEAP` array plus the frame free-list in `.bss`, whereas C xv6
 uses physical RAM directly as its `kalloc` pool.
+
+### Why the Rust user binaries are 5× larger — and how to shrink them
+
+The bloat is **not** intrinsic to Rust. A do-nothing Rust program (`nop.rs`,
+just `exit(0)`) is **32 bytes** of `.text` — smaller than the C equivalent. The
+5× gap comes entirely from two things the ordinary programs pull in:
+
+- **`core::fmt`** via `println!` — `Formatter::pad_integral`, `fmt::write`, the
+  `Display` impls, `do_count_chars`. This is the single biggest chunk.
+- **`alloc`** via `args()` (returns a `Vec<&str>`) and `init_heap()` — the
+  `linked_list_allocator` and `RawVec`.
+
+Things that do **not** help: `opt-level = "z"` and `codegen-units = 1` both made
+the binary *larger* here (the default `opt-level = 3` + `lto = true` already
+inlines aggressively; `"z"` disables size-relevant inlining). `panic = "abort"`
+and `lto` are already set.
+
+What does help:
+
+- **Avoid `core::fmt` / `alloc` in the program.** `forkbench_slim.rs` does the
+  identical work but hand-rolls integer→ASCII output over `syscall::write` and
+  parses `argv[1]` manually (no `println!`, no `args()`, no `init_heap`). Its
+  `.text` is **1,915 bytes vs forkbench's 12,498** — a 6.5× drop, *below* the C
+  forkbench's 2,365.
+
+  | binary                | `.text` |
+  |-----------------------|--------:|
+  | `forkbench` (fmt+alloc) | 12,498 |
+  | `forkbench_slim`        |  1,915 |
+  | C `forkbench`           |  2,365 |
+  | `nop`                   |     32 |
+
+- **Project-wide:** rebuild `core`/`alloc` without the panic-formatting path via
+  `-Z build-std=core,alloc -Z build-std-features=panic_immediate_abort` (needs
+  the `rust-src` component: `rustup component add rust-src`). This strips the
+  fmt machinery that panics drag in, shrinking every binary without touching
+  source.
+
+Smaller user images also mean a smaller `sz`, so `fork`'s `uvmcopy` copies fewer
+pages — the technique directly improves the `fork` numbers above.
 
 ## Interpretation
 
@@ -117,16 +173,16 @@ make fs.img && cp fs.img fs_c.img
 
 # Rust image:
 cargo build --release --target riscv64imac-unknown-none-elf -p xv6-user
-for b in init sh cat echo ls syscallbench forkbench; do \
+for b in init sh cat echo ls syscallbench forkbench execbench nop; do \
   cp target/riscv64imac-unknown-none-elf/release/$b user/_$b; done
 ./mkfs/mkfs fs_rust.img README user/_init user/_sh user/_cat user/_echo user/_ls \
-  user/_syscallbench user/_forkbench
+  user/_syscallbench user/_forkbench user/_execbench user/_nop
 
 # Measure (difference method + optional --icount for deterministic ticks):
 RK=target/riscv64imac-unknown-none-elf/release/xv6-kernel
 python3 bench/syscallbench_harness.py --kernel kernel/kernel --image fs_c.img --n 1000000
 python3 bench/syscallbench_harness.py --kernel $RK --image fs_rust.img --n 1000000
-# Heavy path:
-python3 bench/syscallbench_harness.py --kernel kernel/kernel --image fs_c.img --prog forkbench --n 2000
+# Heavy paths (--prog forkbench / execbench):
 python3 bench/syscallbench_harness.py --kernel $RK --image fs_rust.img --prog forkbench --n 2000
+python3 bench/syscallbench_harness.py --kernel $RK --image fs_rust.img --prog execbench --n 500
 ```
