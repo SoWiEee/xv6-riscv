@@ -971,9 +971,22 @@ fn balloc(dev: u32) -> u32 {
         }
         log_write(&bp);
         brelse(bp);
+        // Zero the freshly allocated block before returning it. Its previous
+        // on-disk contents are stale garbage; this is critical for indirect
+        // blocks, whose entries are later read back as block pointers — a
+        // non-zero garbage entry would be mistaken for an already-allocated
+        // data block and produce a wild disk block number. Mirrors xv6
+        // balloc's trailing `bzero(dev, b + bi)`.
+        let zbp = bread(dev, b);
+        {
+            let mut zbuf = zbp.lock();
+            zbuf.data_mut().fill(0);
+        }
+        log_write(&zbp);
+        brelse(zbp);
         return b;
     }
-    
+
     0 // No free blocks
 }
 
