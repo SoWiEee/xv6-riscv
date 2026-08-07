@@ -268,6 +268,21 @@ pub fn bread(dev: u32, blockno: u32) -> BufRef {
     buf_ref
 }
 
+/// Get a buffer for `blockno` initialized to zeros, WITHOUT reading it from
+/// disk. For a freshly allocated block whose previous on-disk contents are
+/// stale garbage (see `balloc`), this skips the pointless disk read `bread`
+/// would perform. The buffer is marked valid so a later `bread` cache-hits
+/// these zeros instead of re-reading disk.
+pub fn bget_zeroed(dev: u32, blockno: u32) -> BufRef {
+    let buf_ref = bget(dev, blockno);
+    {
+        let mut guard = buf_ref.lock();
+        guard.data_mut().fill(0);
+        guard.set_valid(true);
+    }
+    buf_ref
+}
+
 /// Release a buffer reference.
 ///
 /// Decrements the reference count under the cache spinlock. If it reaches zero

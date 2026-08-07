@@ -6,7 +6,7 @@
 
 use crate::sync::spinlock::{SpinLock, SpinLockGuard};
 use crate::sync::sleeplock::SleepLock;
-use crate::fs::buf::{bread, brelse, BSIZE};
+use crate::fs::buf::{bread, bget_zeroed, brelse, BSIZE};
 use crate::fs::log::{log_write, SuperBlock};
 use alloc::vec::Vec;
 use core::str;
@@ -976,12 +976,10 @@ fn balloc(dev: u32) -> u32 {
         // blocks, whose entries are later read back as block pointers — a
         // non-zero garbage entry would be mistaken for an already-allocated
         // data block and produce a wild disk block number. Mirrors xv6
-        // balloc's trailing `bzero(dev, b + bi)`.
-        let zbp = bread(dev, b);
-        {
-            let mut zbuf = zbp.lock();
-            zbuf.data_mut().fill(0);
-        }
+        // balloc's trailing `bzero(dev, b + bi)`, but via `bget_zeroed` so we
+        // do NOT read the block's stale contents from disk first (we overwrite
+        // it entirely) — one fewer disk round-trip per allocation.
+        let zbp = bget_zeroed(dev, b);
         log_write(&zbp);
         brelse(zbp);
         return b;
