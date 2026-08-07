@@ -23,6 +23,43 @@ This project is a faithful Rust reimplementation of [xv6-riscv](https://github.c
 - **Disk compatible**: Same FS layout (can mount C xv6 `fs.img`)
 - **Test compatible**: All existing usertests pass unchanged
 
+## Performance
+
+Measured against the original C kernel (root `Makefile` build, `-O`) on the same
+host, QEMU 8.2.2 `-machine virt`, `-smp 1`. Two workloads, both using a
+difference method (`T(2N) − T(N)`) to cancel fixed overhead: a `getpid()` loop
+(cheapest syscall — trap entry/dispatch/exit) and `fork`/`exec` loops (a heavy
+proc + address-space path). See [`docs/perf-c-vs-rust.md`](docs/perf-c-vs-rust.md)
+for method, raw numbers, and reproduction.
+
+![Rust cost relative to C](docs/img/perf-exec.svg)
+
+On every path measured the Rust rewrite is *leaner* — a tighter trap/dispatch
+path and `-O3` (vs C's `-O`). Instruction counts are deterministic under
+`-icount shift=0` (identical across runs).
+
+| Path | Metric | C | Rust | Rust vs C |
+|------|--------|--:|-----:|----------:|
+| `getpid` | wall-clock | 18.59 µs | 15.68 µs | 0.84× |
+| `getpid` | instructions | ~1040 | ~680 | 0.65× |
+| `fork`+`wait` | wall-clock | 949 µs | 731 µs | 0.77× |
+| `fork`+`wait` | instructions | ~1.15M | ~0.75M | 0.65× |
+| `fork`+`exec`+`wait` | wall-clock | 3952 µs | 1845 µs | 0.47× |
+
+The trade-off is static footprint: a Rust user binary starts ~5× larger than C.
+That bloat is **not** intrinsic to Rust — a do-nothing program (`nop.rs`) is 32
+bytes — it comes from `core::fmt` (`println!`) and `alloc` (`args()`,
+`init_heap`). `build_rust_users.sh` builds the user crate with `-Z build-std` +
+`panic=immediate-abort`, which roughly halves every binary with no source
+changes (usertests still 17/17); avoiding `println!`/`alloc` in a program (see
+`forkbench_slim.rs`) shrinks it below the C equivalent.
+
+![forkbench binary size](docs/img/perf-size.svg)
+
+> Caveat: this compares two *implementations*, not two languages, and QEMU
+> wall-clock is emulation-bound (the icount figures are the emulation-independent
+> ones). FS-heavy workloads beyond `exec` are not yet covered.
+
 ## Quick Start
 
 ### Prerequisites

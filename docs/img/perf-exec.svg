@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="660" height="292" viewBox="0 0 660 292" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+<rect x="0" y="0" width="660" height="292" rx="10" fill="#ffffff" stroke="#e5e7eb"/>
+<text x="20" y="28" font-size="16" font-weight="700" fill="#1f2937">Rust cost relative to C xv6</text>
+<text x="20" y="47" font-size="12" fill="#6b7280">shorter = Rust faster · C = 100% (dashed) · -smp 1, QEMU 8.2.2</text>
+<line x1="537.3" y1="52" x2="537.3" y2="278" stroke="#6b7280" stroke-width="1" stroke-dasharray="4 3"/>
+<text x="537.3" y="48" font-size="11" fill="#6b7280" text-anchor="middle">C = 100%</text>
+<text x="198" y="77.0" font-size="12.5" fill="#1f2937" text-anchor="end">getpid — wall-clock</text>
+<rect x="210" y="58" width="274.9" height="30" rx="4" fill="#2563eb"/>
+<text x="492.9" y="77.0" font-size="12.5" font-weight="600" fill="#1f2937">84%</text>
+<text x="198" y="119.0" font-size="12.5" fill="#1f2937" text-anchor="end">getpid — instructions</text>
+<rect x="210" y="100" width="212.7" height="30" rx="4" fill="#16a34a"/>
+<text x="430.7" y="119.0" font-size="12.5" font-weight="600" fill="#1f2937">65%</text>
+<text x="198" y="161.0" font-size="12.5" fill="#1f2937" text-anchor="end">fork — wall-clock</text>
+<rect x="210" y="142" width="252.0" height="30" rx="4" fill="#2563eb"/>
+<text x="470.0" y="161.0" font-size="12.5" font-weight="600" fill="#1f2937">77%</text>
+<text x="198" y="203.0" font-size="12.5" fill="#1f2937" text-anchor="end">fork — instructions</text>
+<rect x="210" y="184" width="212.7" height="30" rx="4" fill="#16a34a"/>
+<text x="430.7" y="203.0" font-size="12.5" font-weight="600" fill="#1f2937">65%</text>
+<text x="198" y="245.0" font-size="12.5" fill="#1f2937" text-anchor="end">exec — wall-clock</text>
+<rect x="210" y="226" width="153.8" height="30" rx="4" fill="#16a34a"/>
+<text x="371.8" y="245.0" font-size="12.5" font-weight="600" fill="#1f2937">47%</text>
+</svg>

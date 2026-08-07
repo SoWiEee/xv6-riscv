@@ -136,11 +136,17 @@ What does help:
   | C `forkbench`           |  2,365 |
   | `nop`                   |     32 |
 
-- **Project-wide:** rebuild `core`/`alloc` without the panic-formatting path via
-  `-Z build-std=core,alloc -Z build-std-features=panic_immediate_abort` (needs
-  the `rust-src` component: `rustup component add rust-src`). This strips the
-  fmt machinery that panics drag in, shrinking every binary without touching
-  source.
+- **Project-wide (now applied):** `build_rust_users.sh` builds the user crate
+  with `-Z build-std=core,alloc,compiler_builtins` and `panic=immediate-abort`
+  (needs `rustup component add rust-src`). This rebuilds `core`/`alloc` without
+  the panic-formatting machinery — no source changes — and roughly halves every
+  binary (forkbench 12,498 → 4,946, cat 12,740 → 4,064, ls 14,004 → 6,780,
+  sh 21,141 → 12,124). usertests still passes (17/17). The kernel keeps normal
+  `panic` so its debug messages survive. `immediate-abort` was formerly the
+  `panic_immediate_abort` build-std feature; on current nightly it is the
+  `immediate-abort` panic strategy (`-Z unstable-options -C panic=immediate-abort`).
+  This is complementary to the source-level slim above (build-std removes
+  panic's fmt; the source slim also removes `println!`'s).
 
 Smaller user images also mean a smaller `sz`, so `fork`'s `uvmcopy` copies fewer
 pages — the technique directly improves the `fork` numbers above.

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="660" height="250" viewBox="0 0 660 250" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+<rect x="0" y="0" width="660" height="250" rx="10" fill="#ffffff" stroke="#e5e7eb"/>
+<text x="20" y="28" font-size="16" font-weight="700" fill="#1f2937">forkbench user binary size (.text)</text>
+<text x="20" y="47" font-size="12" fill="#6b7280">bloat is core::fmt + alloc, not Rust — removable</text>
+<text x="198" y="77.0" font-size="12.5" fill="#1f2937" text-anchor="end">C xv6</text>
+<rect x="210" y="58" width="65.5" height="30" rx="4" fill="#2563eb"/>
+<text x="283.5" y="77.0" font-size="12.5" font-weight="600" fill="#1f2937">2,365</text>
+<text x="198" y="119.0" font-size="12.5" fill="#1f2937" text-anchor="end">Rust — default</text>
+<rect x="210" y="100" width="346.1" height="30" rx="4" fill="#dc2626"/>
+<text x="564.1" y="119.0" font-size="12.5" font-weight="600" fill="#1f2937">12,498</text>
+<text x="198" y="161.0" font-size="12.5" fill="#1f2937" text-anchor="end">Rust — build-std slim</text>
+<rect x="210" y="142" width="137.0" height="30" rx="4" fill="#ea580c"/>
+<text x="355.0" y="161.0" font-size="12.5" font-weight="600" fill="#1f2937">4,946</text>
+<text x="198" y="203.0" font-size="12.5" fill="#1f2937" text-anchor="end">Rust — source slim</text>
+<rect x="210" y="184" width="53.0" height="30" rx="4" fill="#16a34a"/>
+<text x="271.0" y="203.0" font-size="12.5" font-weight="600" fill="#1f2937">1,915</text>
+</svg>

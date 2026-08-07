@@ -1,9 +1,22 @@
 #!/bin/bash
 set -e
 
-# Build Rust user programs (release for smaller size)
-echo "Building Rust user programs..."
-cargo build --release --target riscv64imac-unknown-none-elf -p xv6-user
+# Build Rust user programs (release for smaller size).
+#
+# build-std rebuilds core/alloc with panic=immediate-abort, which strips the
+# panic-formatting machinery that otherwise bloats every user binary (~2.5x
+# smaller .text — e.g. forkbench 12,498 -> 4,946). This applies ONLY to the
+# user build; the kernel (built below) keeps normal panic so its panic
+# messages survive for debugging.
+#
+# RUSTFLAGS must replicate .cargo/config.toml's target flags because setting
+# RUSTFLAGS replaces (does not merge with) the config's rustflags; panic is
+# switched from abort to immediate-abort. Keep this list in sync with
+# .cargo/config.toml [target.riscv64imac-unknown-none-elf].rustflags.
+echo "Building Rust user programs (slim: build-std + panic=immediate-abort)..."
+RUSTFLAGS="-C link-arg=-nostdlib -C link-arg=-static -C target-feature=+reserve-x4 -Z unstable-options -C panic=immediate-abort" \
+  cargo build --release --target riscv64imac-unknown-none-elf -p xv6-user \
+  -Z build-std=core,alloc,compiler_builtins
 
 # Copy binaries to user directory with _ prefix (as mkfs expects).
 # These are the programs that have been ported to Rust; the remaining
