@@ -147,6 +147,7 @@ UPROGS=\
 	$U/_dorphan\
 	$U/_sync\
 	$U/_test_leak_poc\
+	$U/_syscallbench\
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)
