@@ -1,6 +1,6 @@
 // kernel/src/sync/sleeplock.rs
 use crate::sync::spinlock::SpinLock;
-use crate::proc::{sleep, wakeup, current_process, current_process_opt, started};
+use crate::proc::{sleep, wakeup, current_process};
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
 

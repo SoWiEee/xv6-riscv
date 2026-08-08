@@ -1,12 +1,9 @@
 // kernel/src/proc/scheduler.rs
 use crate::proc::process::{Proc, ProcState, NPROC, NOFILE};
 use crate::arch::trap::{TrapFrame, Context};
-use crate::arch::asm::{intr_on, intr_off, intr_get, w_satp, make_satp, r_tp, r_sstatus, w_sstatus, w_sepc, w_stvec, TRAMPOLINE};
-use crate::mm::page_table::{PageTable, kernel_pagetable, uvmcreate, uvmalloc, uvmfree, uvmcopy};
+use crate::arch::asm::{intr_on, intr_get};
 use crate::mm::frame_allocator::{alloc_page, free_page};
-use crate::sync::spinlock::SpinLock;
 use crate::sync::mutex::Mutex;
-use alloc::vec::Vec;
 
 pub static PROCS: [Proc; NPROC] = [const { Proc::new() }; NPROC];
 pub static mut SCHEDULER_STARTED: bool = false;

@@ -8,7 +8,6 @@ use crate::sync::spinlock::{SpinLock, SpinLockGuard};
 use crate::sync::sleeplock::SleepLock;
 use crate::fs::buf::{bread, bget_zeroed, brelse, BSIZE};
 use crate::fs::log::{log_write, SuperBlock};
-use alloc::vec::Vec;
 use core::str;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -158,7 +157,7 @@ impl Inode {
     pub fn refcnt(&self) -> usize { self.refcnt.load(Ordering::Acquire) }
     
     /// Acquire the spinlock for metadata access.
-    pub fn inner(&self) -> SpinLockGuard<InodeInner> {
+    pub fn inner(&self) -> SpinLockGuard<'_, InodeInner> {
         self.spinlock.acquire()
     }
     
@@ -566,7 +565,7 @@ pub fn iinit() {
 }
 
 fn iget_locked(dev: u32, inum: u32) -> &'static Inode {
-    let mut cache = ICACHE.acquire();
+    let cache = ICACHE.acquire();
 
     // Search for existing inode
     for i in 0..NINODE {
@@ -646,7 +645,7 @@ pub fn iget(dev: u32, inum: u32) -> &'static Inode {
 }
 
 pub fn iput(ip: &Inode) {
-    let mut cache = ICACHE.acquire();
+    let cache = ICACHE.acquire();
     
     // Find and decrement refcnt
     let mut should_truncate = false;
@@ -961,7 +960,7 @@ fn balloc(dev: u32) -> u32 {
             let bit = (b % BPB) % 8;
             if (byte & (1 << bit)) == 0 {
                 // Free block found
-                let mut data = buf.data_mut();
+                let data = buf.data_mut();
                 data[(b % BPB) as usize / 8] |= 1 << bit;
             } else {
                 drop(buf);

@@ -1,7 +1,5 @@
 // kernel/src/arch/paging.rs
-use super::registers::PGSIZE;
 use super::asm::{sfence_vma, w_satp, make_satp};
-use core::ptr::NonNull;
 use crate::mm::address::{PhysAddr, VirtAddr, PhysPageNum, VirtPageNum};
 
 pub const PAGE_SIZE: usize = 4096;
@@ -94,7 +92,7 @@ impl PageTableWalker {
 
 pub fn kvm_init() -> PhysPageNum {
     let root = crate::mm::frame_allocator::alloc_page().expect("kvm_init: no memory");
-    let mut walker = PageTableWalker::new(root);
+    let _walker = PageTableWalker::new(root);
     // Map UART, VIRTIO, PLIC, kernel text/data, trampoline, kernel stacks
     // ... implementation
     crate::mm::paging::set_kernel_pagetable(root);

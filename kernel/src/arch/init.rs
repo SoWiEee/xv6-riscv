@@ -29,7 +29,7 @@ pub extern "C" fn mstart() -> ! {
         asm!("csrw mstatus, {}", in(reg) mstatus);
 
         // mret target: init() in S-mode.
-        asm!("csrw mepc, {}", in(reg) init as usize);
+        asm!("csrw mepc, {}", in(reg) init as *const () as usize);
 
         // Leave paging disabled for now; kvminithart() enables it in S-mode.
         asm!("csrw satp, x0");
@@ -83,7 +83,7 @@ pub extern "C" fn init() -> ! {
         unsafe extern "C" {
             fn _kernel_end();
         }
-        let start = _kernel_end as usize;
+        let start = _kernel_end as *const () as usize;
         let end_addr = crate::arch::asm::PHYSTOP;
 
         // Initialize frame allocator first so kvminit can allocate pages

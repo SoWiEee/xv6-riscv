@@ -28,7 +28,7 @@ use crate::fs::buf::{bread, brelse, bwrite, bpin, bunpin, BSIZE};
 /// (guarded by the log's `committing` flag), so it needs no lock. Sized for a
 /// full log (LOGSIZE blocks); a transaction uses at most MAXOPBLOCKS.
 static mut LOG_GATHER: [u8; LOGSIZE * BSIZE] = [0; LOGSIZE * BSIZE];
-use crate::sync::spinlock::{SpinLock, SpinLockGuard};
+use crate::sync::spinlock::SpinLock;
 
 /// Max blocks a single file-system op may write. Bounds one transaction so the
 /// log can always hold `outstanding * MAXOPBLOCKS` blocks.

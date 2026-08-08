@@ -3,7 +3,6 @@ use crate::fs::inode::Inode;
 use crate::fs::pipe::Pipe;
 use crate::sync::spinlock::{SpinLock, SpinLockGuard};
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FileType {
@@ -72,7 +71,7 @@ impl File {
         }, "file")))
     }
     
-    pub fn inner(&self) -> SpinLockGuard<FileInner> {
+    pub fn inner(&self) -> SpinLockGuard<'_, FileInner> {
         self.inner.acquire()
     }
     

@@ -4,7 +4,6 @@
 //! Provides the syscall entry point called from trap handler.
 //! Individual syscall implementations are in `crate::proc::syscall`.
 
-use crate::proc::current_process;
 use crate::proc::syscall::proc_syscall;
 
 /// Main system call dispatcher.

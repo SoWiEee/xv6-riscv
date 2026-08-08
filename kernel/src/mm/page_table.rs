@@ -193,9 +193,7 @@ impl PageTable {
     }
 }
 
-use spin::Once;
 
-use core::sync::atomic::{AtomicPtr, Ordering};
 
 /// Global kernel page table pointer (initialized once).
 pub static mut KERNEL_PAGETABLE_PTR: *mut PageTable = core::ptr::null_mut();
@@ -268,7 +266,7 @@ fn map_kernel(pt: &mut PageTable) {
     }
 
     // Trampoline - map the page containing uservec to TRAMPOLINE virtual address
-    let uservec_addr = uservec as usize;
+    let uservec_addr = uservec as *const () as usize;
     let trampoline_paddr = PhysAddr((uservec_addr / PAGE_SIZE) * PAGE_SIZE);
     pt.map(VirtAddr(crate::arch::asm::TRAMPOLINE), trampoline_paddr, PTE_R | PTE_X).unwrap();
 }
@@ -284,7 +282,7 @@ pub fn kvminithart() {
 pub fn uvmcreate() -> Result<PageTable, &'static str> {
     let mut pt = PageTable::new()?;
     // Map trampoline - map the page containing uservec to TRAMPOLINE virtual address
-    let uservec_addr = uservec as usize;
+    let uservec_addr = uservec as *const () as usize;
     let trampoline_paddr = PhysAddr((uservec_addr / PAGE_SIZE) * PAGE_SIZE);
     pt.map(VirtAddr(crate::arch::asm::TRAMPOLINE), trampoline_paddr, PTE_R | PTE_X).unwrap();
     Ok(pt)

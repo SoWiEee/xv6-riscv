@@ -116,7 +116,7 @@ unsafe extern "C" {
 
 /// Get the address of the kernelvec trap handler.
 pub fn kernelvec_addr() -> usize {
-    kernelvec as usize
+    kernelvec as *const () as usize
 }
 
 /// Switch from one context to another.
@@ -163,14 +163,14 @@ pub fn usertrapret(p: &'static crate::proc::process::Proc) -> ! {
     intr_off();
 
     // While in user space, traps go to uservec in the trampoline page.
-    let uservec_va = TRAMPOLINE + (uservec as usize & 0xFFF);
+    let uservec_va = TRAMPOLINE + (uservec as *const () as usize & 0xFFF);
     w_stvec(uservec_va);
 
     // Kernel state uservec restores on the next trap from this process.
     let tf = unsafe { &mut *tf_ptr };
     tf.kernel_satp = PhysPageNum::new(r_satp()); // full kernel satp value
     tf.kernel_sp = kstack + crate::proc::scheduler::KSTACK_SIZE;
-    tf.kernel_trap = usertrap as usize;
+    tf.kernel_trap = usertrap as *const () as usize;
     tf.kernel_hartid = r_tp();
 
     // Return to user (SPP=0) with interrupts enabled there (SPIE=1).
@@ -182,7 +182,7 @@ pub fn usertrapret(p: &'static crate::proc::process::Proc) -> ! {
 
     // Jump to userret in the trampoline (mapped in both page tables). It
     // switches to the user page table and returns to user mode.
-    let userret_va = TRAMPOLINE + (userret as usize & 0xFFF);
+    let userret_va = TRAMPOLINE + (userret as *const () as usize & 0xFFF);
     let userret_fn: extern "C" fn(usize) -> ! = unsafe { core::mem::transmute(userret_va) };
     userret_fn(user_satp)
 }
@@ -216,13 +216,13 @@ pub extern "C" fn forkret() -> ! {
         }
 
         // While executing in the kernel, take traps via kernelvec.
-        w_stvec(kernelvec as usize);
+        w_stvec(kernelvec as *const () as usize);
 
         let p = crate::proc::current_process();
 
         // Save the user program counter.
         {
-            let mut inner = p.lock();
+            let inner = p.lock();
             unsafe { inner.trapframe.as_mut().unwrap().epc = sepc; }
         }
 
@@ -233,7 +233,7 @@ pub extern "C" fn forkret() -> ! {
                 }
                 // sepc points at the ecall; return to the following instruction.
                 {
-                    let mut inner = p.lock();
+                    let inner = p.lock();
                     unsafe { inner.trapframe.as_mut().unwrap().epc += 4; }
                 }
                 intr_on();
@@ -285,7 +285,7 @@ fn forensic_stack_dump(sp: usize, garbage: usize) {
         fn etext();
     }
     let text_lo = crate::arch::asm::KERNBASE;
-    let text_hi = etext as usize;
+    let text_hi = etext as *const () as usize;
 
     // kerneltrap frame is 96 bytes; kernelvec pushed a 256-byte register block
     // below it. So the fault-time register file is at [sp+96, sp+352) and the

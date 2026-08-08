@@ -40,7 +40,7 @@ impl Pipe {
         }
     }
 
-    fn inner(&self) -> SpinLockGuard<PipeInner> {
+    fn inner(&self) -> SpinLockGuard<'_, PipeInner> {
         self.inner.acquire()
     }
 

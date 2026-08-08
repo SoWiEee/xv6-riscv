@@ -1,14 +1,8 @@
 // kernel/src/proc/syscall.rs
-use crate::arch::trap::TrapFrame;
 use crate::proc::current_process;
 use crate::proc::scheduler::{alloc_proc, free_proc};
-use crate::proc::process::Proc;
-use crate::mm::page_table::{PageTable, uvmcreate, uvmalloc, uvmfree, uvmdealloc, uvmcopy, kernel_pagetable};
-use crate::mm::frame_allocator::{alloc_page, free_page};
-use crate::mm::address::{PhysAddr, PhysPageNum, VirtAddr};
-use crate::arch::asm::{make_satp, r_satp, w_satp, sfence_vma, TRAMPOLINE};
-use crate::sync::spinlock::SpinLock;
-use crate::fs::{File, Inode, filealloc, fileclose, filewrite, filedup, fileread, iupdate, namei, nameiparent, dirlink, dirlookup, ialloc, iput, begin_op, end_op, I_DIR, I_FILE, I_DEV};
+use crate::mm::page_table::{uvmcreate, uvmalloc, uvmdealloc, uvmcopy};
+use crate::fs::{Inode, fileclose, filewrite, filedup, fileread, iupdate, begin_op, end_op};
 
 /// RAII bracket for a file-system transaction. `OpGuard::new()` opens a
 /// transaction (`begin_op`) and the `Drop` closes it (`end_op`), so every early
@@ -28,12 +22,7 @@ impl Drop for OpGuard {
         end_op();
     }
 }
-use crate::arch::console::printk;
-use crate::printk;
 use crate::elf::{load_elf, setup_user_stack};
-use core::fmt::Arguments;
-use alloc::vec::Vec;
-use alloc::string::String;
 use alloc::sync::Arc;
 
 // System call numbers. These MUST match C xv6 (kernel/syscall.h) so that
@@ -122,7 +111,7 @@ fn sys_fork() -> isize {
 
     // Now it is safe to lock the parent. Lock order is child-before-parent and
     // is used consistently in fork.
-    let mut pinner = p.lock();
+    let pinner = p.lock();
 
     // Copy page table
     npinner.pagetable = match uvmcreate() {
@@ -187,7 +176,7 @@ fn sys_fork() -> isize {
     // own kernel stack. alloc_proc zeroed the context, so without this the
     // scheduler would `ret` to address 0.
     npinner.context = crate::arch::trap::Context::new();
-    npinner.context.ra = crate::arch::trap::forkret as usize;
+    npinner.context.ra = crate::arch::trap::forkret as *const () as usize;
     npinner.context.sp = npinner.kstack + crate::proc::scheduler::KSTACK_SIZE;
 
     drop(npinner);
@@ -366,7 +355,7 @@ fn sys_pipe(fdarray: usize) -> isize {
 
 fn sys_read(fd: usize, addr: usize, n: usize) -> isize {
     let p = current_process();
-    let mut inner = p.lock();
+    let inner = p.lock();
     
     if fd >= 16 || inner.ofile[fd].is_none() {
         return -1;
@@ -415,7 +404,7 @@ fn sys_read(fd: usize, addr: usize, n: usize) -> isize {
 
 fn sys_write(fd: usize, addr: usize, n: usize) -> isize {
     let p = current_process();
-    let mut inner = p.lock();
+    let inner = p.lock();
     
     if fd >= 16 || inner.ofile[fd].is_none() {
         return -1;
@@ -484,7 +473,7 @@ fn sys_kill(pid: usize) -> isize {
 
 fn sys_exec(path: usize, argv: usize) -> isize {
     let p = current_process();
-    let mut inner = p.lock();
+    let inner = p.lock();
     
     // Translate path from user space
     let pt = inner.pagetable.as_ref().unwrap();
@@ -710,7 +699,7 @@ fn sys_exec(path: usize, argv: usize) -> isize {
 
 fn sys_fstat(fd: usize, addr: usize) -> isize {
     let p = current_process();
-    let mut inner = p.lock();
+    let inner = p.lock();
     
     if fd >= 16 || inner.ofile[fd].is_none() {
         return -1;
@@ -733,7 +722,7 @@ fn sys_fstat(fd: usize, addr: usize) -> isize {
 
 fn sys_chdir(path: usize) -> isize {
     let p = current_process();
-    let mut inner = p.lock();
+    let inner = p.lock();
     
     // Translate path from user space
     let pt = inner.pagetable.as_ref().unwrap();
@@ -871,9 +860,9 @@ fn sys_uptime() -> isize {
     crate::proc::ticks() as isize
 }
 
-fn sys_open(path: usize, flags: usize, mode: usize) -> isize {
+fn sys_open(path: usize, flags: usize, _mode: usize) -> isize {
     let p = current_process();
-    let mut inner = p.lock();
+    let inner = p.lock();
     
     // Translate path from user space
     let pt = inner.pagetable.as_ref().unwrap();
@@ -1023,7 +1012,7 @@ fn sys_open(path: usize, flags: usize, mode: usize) -> isize {
 
 fn sys_mknod(path: usize, major: usize, minor: usize) -> isize {
     let p = current_process();
-    let mut inner = p.lock();
+    let inner = p.lock();
     
     // Translate path from user space
     let pt = inner.pagetable.as_ref().unwrap();
@@ -1097,7 +1086,7 @@ fn sys_mknod(path: usize, major: usize, minor: usize) -> isize {
 
 fn sys_unlink(path: usize) -> isize {
     let p = current_process();
-    let mut inner = p.lock();
+    let inner = p.lock();
     
     // Translate path from user space
     let pt = inner.pagetable.as_ref().unwrap();
@@ -1231,7 +1220,7 @@ fn sys_unlink(path: usize) -> isize {
 
 fn sys_link(old: usize, new: usize) -> isize {
     let p = current_process();
-    let mut inner = p.lock();
+    let inner = p.lock();
     
     // Translate old path
     let pt = inner.pagetable.as_ref().unwrap();
@@ -1339,7 +1328,7 @@ fn sys_link(old: usize, new: usize) -> isize {
 
 fn sys_mkdir(path: usize) -> isize {
     let p = current_process();
-    let mut inner = p.lock();
+    let inner = p.lock();
     
     // Translate path from user space
     let pt = inner.pagetable.as_ref().unwrap();

@@ -1,5 +1,5 @@
 // kernel/src/arch/registers.rs
-use tock_registers::{register_bitfields, registers::*};
+use tock_registers::register_bitfields;
 
 register_bitfields! {u64,
     SSTATUS [

@@ -1,6 +1,5 @@
 // kernel/src/arch/console.rs
 use core::fmt::{self, Write};
-use core::arch::asm;
 
 // UART16550 base address for QEMU virt machine
 const UART_BASE: usize = 0x1000_0000;

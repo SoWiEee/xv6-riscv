@@ -1,6 +1,5 @@
 // kernel/src/proc/trapframe.rs
 use crate::arch::trap::TrapFrame;
-use crate::mm::address::PhysPageNum;
 
 pub const TRAPFRAME_SIZE: usize = core::mem::size_of::<TrapFrame>();
 
@@ -11,7 +10,7 @@ pub fn alloc_trapframe(kstack: usize) -> *mut TrapFrame {
     tf_ptr
 }
 
-pub fn free_trapframe(tf: *mut TrapFrame) {
+pub fn free_trapframe(_tf: *mut TrapFrame) {
     // TrapFrame is part of the kernel stack, so freeing the stack frees the trapframe
     // No action needed here
 }

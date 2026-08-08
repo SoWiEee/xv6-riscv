@@ -4,17 +4,14 @@ pub mod scheduler;
 pub mod syscall;
 pub mod trapframe;
 
-use crate::proc::process::{Proc, ProcState, NPROC, NOFILE, ProcInner};
+use crate::proc::process::{Proc, ProcState};
 use crate::arch::trap::Context;
-use crate::arch::asm::{r_tp, make_satp, TRAMPOLINE};
-use crate::sync::spinlock::{SpinLock, SpinLockGuard};
+use crate::arch::asm::r_tp;
+use crate::sync::spinlock::SpinLock;
 use crate::mm::page_table::PageTable;
-use crate::mm::address::PhysPageNum;
 use crate::fs::Inode;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use alloc::sync::Arc;
-use core::sync::atomic::AtomicUsize;
 
 /// Number of pages in a user process's stack. The stack sits directly above the
 /// program image (with a guard page below it), and the heap grows above it — see
@@ -118,7 +115,7 @@ pub fn userinit() {
     // kernel .text, so map the physical page that actually contains it (NOT
     // the TRAMPOLINE virtual address).
     unsafe extern "C" { fn uservec(); }
-    let trampoline_pa = (uservec as usize / crate::arch::paging::PAGE_SIZE) * crate::arch::paging::PAGE_SIZE;
+    let trampoline_pa = (uservec as *const () as usize / crate::arch::paging::PAGE_SIZE) * crate::arch::paging::PAGE_SIZE;
     pt.map(
         crate::mm::address::VirtAddr(crate::arch::asm::TRAMPOLINE),
         crate::mm::address::PhysAddr(trampoline_pa),
@@ -170,7 +167,7 @@ pub fn userinit() {
 
     // First run starts at forkret (kernel code), which calls usertrapret to
     // enter user mode via the trampoline.
-    inner.context.ra = crate::arch::trap::forkret as usize;
+    inner.context.ra = crate::arch::trap::forkret as *const () as usize;
     inner.context.sp = inner.kstack + crate::proc::scheduler::KSTACK_SIZE;
 
     inner.pid = 1;

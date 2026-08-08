@@ -3,7 +3,6 @@ use super::registers::*;
 use super::asm::*;
 use core::ptr::write_volatile;
 use core::ptr::read_volatile;
-use core::fmt::Write;
 
 pub const UART0: usize = 0x10000000;
 pub const VIRTIO0: usize = 0x10001000;

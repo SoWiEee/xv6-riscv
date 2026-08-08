@@ -371,7 +371,7 @@ pub fn setup_user_stack(pt: &mut PageTable, args: &[String], sp: usize) -> Resul
 /// Returns `(entry_point, program_end)` — see [`load_elf`].
 pub fn load_elf_from_bytes(data: &[u8], pt: &mut PageTable) -> Result<(usize, usize), &'static str> {
     use crate::mm::address::VirtAddr;
-    use crate::arch::paging::{PAGE_SIZE, PTE_R, PTE_W, PTE_X, PTE_U, PTE_V};
+    use crate::arch::paging::{PAGE_SIZE, PTE_R, PTE_W, PTE_X, PTE_U};
     use alloc::vec::Vec;
     use core::mem;
     
@@ -454,7 +454,7 @@ pub fn load_elf_from_bytes(data: &[u8], pt: &mut PageTable) -> Result<(usize, us
         
         // Allocate pages for this segment
         let start_page = vaddr & !(PAGE_SIZE - 1);
-        let end_page = ((vaddr + memsz + PAGE_SIZE - 1) & !(PAGE_SIZE - 1));
+        let end_page = (vaddr + memsz + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
         
         for page_addr in (start_page..end_page).step_by(PAGE_SIZE) {
             let page = crate::mm::frame_allocator::kalloc().ok_or("Failed to allocate page")?;
