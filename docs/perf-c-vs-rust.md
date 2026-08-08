@@ -173,19 +173,34 @@ machinery are pulled in even for a trivial program.
 
 ## Kernel optimizations
 
+The FS write path was dominated by virtio round-trips (each ~2.5 ms of QEMU poll
+latency). Three landed changes cut them, each verified with `user/fsbench`
+(N 1 KiB writes, difference method, -smp 1) and usertests 17/17 on -smp 1 and
+-smp 3:
+
 - **Batched disk I/O** (`read_block`/`write_block`): a 1024-byte FS block is two
   consecutive 512-byte sectors, and virtio-blk transfers `buffer_len / 512`
   sectors per request, so one 1024-byte request moves the whole block instead of
-  two per-sector round-trips (each a device-lock acquire + descriptor setup +
-  notify + poll). Measured with `user/fsbench` (N 1 KiB writes, difference
-  method, -smp 1): **31,556 → 24,777 µs per block write, ~21% faster**; usertests
-  stay 17/17 on -smp 1 and -smp 3.
-- **Tried and reverted:** kernel fat-LTO + `codegen-units=1`. No measurable
-  change — `getpid`/`fork` are dominated by the assembly trap path (register
-  save/restore, the trampoline `satp` switch, and the `sfence.vma` TLB flush),
-  not Rust call overhead, so inlining the small cross-module accessors moves
-  nothing. Wall-clock noise (~7% on `fork`) and coarse icount ticks put
-  sub-7% kernel micro-optimizations below the measurement floor here.
+  two per-sector round-trips. **31,556 → 24,777 µs per block write, ~21%.**
+- **Batched log write** (`write_log`): a transaction's N log blocks are
+  consecutive on disk, so they are gathered into one contiguous buffer and
+  flushed in a single request (via the generalized `virtio_rw_buf`) instead of
+  one `bwrite` per block. **~5.7%.** (`install_trans`'s home-block writes go to
+  *scattered* sectors, so they can't be collapsed the same way.)
+- **Skip the read when zeroing a freshly allocated block** (`balloc`):
+  `bget_zeroed` grabs the buffer without reading its stale contents from disk
+  (they're about to be overwritten with zeros). **~3.6%** (correct by
+  construction; at the noise edge).
+
+Cumulatively FS writes went ~31,556 → ~23,557 µs per block (~25%).
+
+**Tried and reverted:** (a) kernel fat-LTO + `codegen-units=1` — no measurable
+change; `getpid`/`fork` are dominated by the assembly trap path (register
+save/restore, the trampoline `satp` switch, the `sfence.vma` TLB flush), not
+Rust call overhead. (b) `bget_zeroed` for the log block in `write_log` — the log
+blocks are cached across commits, so it just added a pointless memset. Wall-clock
+noise (~4–7%) and coarse icount ticks put sub-noise micro-optimizations below the
+measurement floor.
 
 ## Reproduce
 
