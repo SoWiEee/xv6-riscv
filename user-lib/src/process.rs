@@ -1,5 +1,4 @@
 // user-lib/src/process.rs
-use crate::syscall;
 
 pub fn fork() -> isize {
     crate::syscall::fork()

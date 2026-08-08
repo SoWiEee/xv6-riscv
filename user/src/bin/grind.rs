@@ -210,7 +210,9 @@ fn go(which_child: i32) -> ! {
                     syscall::mkdir("a");
                     syscall::chdir("a");
                     syscall::unlink("../a");
-                    fd = syscall::open("x", O_CREATE | O_RDWR) as i32;
+                    // Open only for its side effect (create "x"); the child
+                    // exit(0) below closes the fd, matching C xv6 grind.
+                    let _ = syscall::open("x", O_CREATE | O_RDWR);
                     syscall::unlink("x");
                     syscall::exit(0);
                 } else if pid < 0 {

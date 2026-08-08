@@ -3,8 +3,7 @@
 #![no_main]
 
 extern crate alloc;
-use xv6_user_lib::{print, println, syscall};
-use alloc::string::String;
+use xv6_user_lib::{println, syscall};
 
 #[unsafe(no_mangle)]
 fn main() -> ! {
