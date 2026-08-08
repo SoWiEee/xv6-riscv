@@ -20,7 +20,14 @@
 //! because the `committing` flag makes every other op sleep in `begin_op` — only
 //! the single committing process touches the log during a commit.
 
-use crate::fs::buf::{bread, brelse, bwrite, bpin, bunpin};
+use crate::fs::buf::{bread, brelse, bwrite, bpin, bunpin, BSIZE};
+
+/// Scratch buffer to gather the transaction's log blocks into one contiguous
+/// region so `write_log` can flush them in a single virtio request. Only ever
+/// touched inside `write_log`, which runs solely from the serialised `commit()`
+/// (guarded by the log's `committing` flag), so it needs no lock. Sized for a
+/// full log (LOGSIZE blocks); a transaction uses at most MAXOPBLOCKS.
+static mut LOG_GATHER: [u8; LOGSIZE * BSIZE] = [0; LOGSIZE * BSIZE];
 use crate::sync::spinlock::{SpinLock, SpinLockGuard};
 
 /// Max blocks a single file-system op may write. Bounds one transaction so the
@@ -200,18 +207,36 @@ fn commit() {
 
 /// Copy modified (cached, pinned) blocks from the buffer cache to the log area.
 fn write_log(dev: u32, start: u32, lh: &LogHeader) {
-    for i in 0..lh.n as usize {
-        let to = bread(dev, start + 1 + i as u32); // log block
+    let n = lh.n as usize;
+    if n == 0 {
+        return;
+    }
+    // The N log blocks occupy consecutive disk blocks [start+1 .. start+1+N),
+    // i.e. consecutive sectors. Gather every block's data into one contiguous
+    // buffer and flush it in a SINGLE virtio request instead of one round-trip
+    // per block. We also copy each block into its log-block cache buffer so
+    // install_trans cache-hits it (rather than re-reading from disk).
+    // Build the slice from a raw pointer (not `&mut LOG_GATHER`, which the 2024
+    // edition rejects). Safe: commit() is serialised, so this is the only live
+    // reference to the static.
+    let gather: &mut [u8] = unsafe {
+        core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(LOG_GATHER) as *mut u8, LOGSIZE * BSIZE)
+    };
+    for i in 0..n {
+        let to = bread(dev, start + 1 + i as u32); // log block cache buffer
         let from = bread(dev, lh.block[i]); // cached home block
         {
             let src = from.lock();
             let mut dst = to.lock();
             dst.data_mut().copy_from_slice(src.data());
+            gather[i * BSIZE..(i + 1) * BSIZE].copy_from_slice(src.data());
         }
-        bwrite(&to);
         brelse(from);
-        brelse(to);
+        brelse(to); // stays cached (data populated) for install_trans
     }
+    // One request writes all N log blocks (2N consecutive sectors) at sector
+    // (start+1)*2. The gather buffer is contiguous .bss, so it is DMA-safe.
+    crate::drivers::virtio::virtio_rw_buf((start as u64 + 1) * 2, &mut gather[..n * BSIZE], true);
 }
 
 /// Copy committed blocks from the on-disk log to their home locations. With

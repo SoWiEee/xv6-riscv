@@ -215,15 +215,24 @@ pub struct Block {
 }
 
 /// Read or write a block via virtio.
-/// 
+///
 /// # Arguments
 /// * `block` - Buffer containing sector number and data
 /// * `write` - `true` for write, `false` for read
-/// 
+///
 /// Blocks until the operation completes.
 pub fn virtio_rw(block: &mut Block, write: bool) {
-    let sector = block.blockno;
+    virtio_rw_buf(block.blockno, &mut block.data, write);
+}
 
+/// Read or write `buf.len() / 512` consecutive sectors starting at `sector` in a
+/// single virtio request. `buf` must be physically contiguous (identity-mapped
+/// kernel memory) and its length a multiple of 512. Used to collapse several
+/// consecutive on-disk blocks (e.g. the log area) into one round-trip instead of
+/// one request per block.
+///
+/// Blocks until the operation completes.
+pub fn virtio_rw_buf(sector: u64, buf: &mut [u8], write: bool) {
     // Hold the device lock for the whole operation: this serialises requests so
     // only one is ever outstanding, which lets us use a fixed 3-descriptor chain
     // (0 -> 1 -> 2) and a simple polled completion.
@@ -247,7 +256,8 @@ pub fn virtio_rw(block: &mut Block, write: bool) {
     device.status = 0xff; // sentinel; device overwrites with 0 (OK) on success
 
     let req_pa = &raw const device.req as u64;
-    let buf_pa = block.data.as_ptr() as u64;
+    let buf_pa = buf.as_ptr() as u64;
+    let buf_len = buf.len() as u32;
     let status_pa = &raw mut device.status as u64;
 
     unsafe {
@@ -257,10 +267,10 @@ pub fn virtio_rw(block: &mut Block, write: bool) {
         (*desc.add(0)).flags = VIRTQ_DESC_F_NEXT;
         (*desc.add(0)).next = 1;
 
-        // desc[1]: data buffer (block.data.len() bytes = that many /512 sectors).
+        // desc[1]: data buffer (buf_len bytes = that many /512 sectors).
         // Device-WRITABLE on read, device-readable on write. Chains to status.
         (*desc.add(1)).addr = buf_pa;
-        (*desc.add(1)).len = block.data.len() as u32;
+        (*desc.add(1)).len = buf_len;
         (*desc.add(1)).flags = VIRTQ_DESC_F_NEXT | if write { 0 } else { VIRTQ_DESC_F_WRITE };
         (*desc.add(1)).next = 2;
 
