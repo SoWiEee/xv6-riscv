@@ -925,14 +925,16 @@ pub fn dirlookup_locked(dp: &Inode, name: &str) -> Option<&'static Inode> {
 // Block allocation
 const ROOTDEV: u32 = 1;
 const ROOTINO: u32 = 1;
-const FSSIZE: u32 = 2000;
 const BPB: u32 = BSIZE as u32 * 8;
 const IPB: u32 = BSIZE as u32 / core::mem::size_of::<DiskInode>() as u32;
 
+// Uppercase names deliberately mirror C xv6's IBLOCK/BBLOCK macros.
+#[allow(non_snake_case)]
 fn IBLOCK(inum: u32, sb: &SuperBlock) -> u32 {
     inum / IPB + sb.inodestart
 }
 
+#[allow(non_snake_case)]
 fn BBLOCK(bno: u32, sb: &SuperBlock) -> u32 {
     bno / BPB + sb.bmapstart
 }

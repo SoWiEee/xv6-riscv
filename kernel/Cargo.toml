@@ -19,24 +19,13 @@ critical-section = { workspace = true }
 name = "xv6-kernel"
 path = "src/bin/kernel.rs"
 
-[profile.release]
-panic = "abort"
-lto = true
-codegen-units = 1
-strip = true
-opt-level = "z"
-
-[profile.dev]
-panic = "abort"
-
-[target.riscv64imac-unknown-none-elf]
-runner = "qemu-system-riscv64 -machine virt -nographic -bios none -kernel"
-rustflags = [
-    "-C", "target-feature=+zicsr,+zifencei",
-]
-
-[build]
-target = "riscv64imac-unknown-none-elf"
+# NOTE: profiles, per-target rustflags/runner, and the default build target are
+# NOT set here — Cargo ignores those keys in a non-root manifest. The active
+# release/dev profiles (panic = "abort") live in the workspace-root Cargo.toml;
+# the linker and rustflags live in .cargo/config.toml; the target is passed
+# explicitly on every cargo invocation (--target riscv64imac-unknown-none-elf).
+# zicsr/zifencei are part of the riscv64imac target's default features, so no
+# extra rustflags are needed for CSR access.
 
 [lib]
 name = "xv6_kernel"

@@ -12,6 +12,7 @@ const UART_RHR: usize = 0;      // Receiver Holding Register
 const UART_IER: usize = 1;      // Interrupt Enable Register
 const UART_FCR: usize = 2;      // FIFO Control Register
 const UART_LCR: usize = 3;      // Line Control Register
+#[allow(dead_code)] // part of the 16550 register map; kept for reference
 const UART_MCR: usize = 4;      // Modem Control Register
 const UART_LSR: usize = 5;      // Line Status Register
 const UART_LSR_RX: u8 = 1;      // Data ready

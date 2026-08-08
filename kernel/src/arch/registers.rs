@@ -55,5 +55,8 @@ pub const PTE_A: u64 = 1 << 6;
 pub const PTE_D: u64 = 1 << 7;
 
 pub const PGSIZE: usize = 4096;
+// Uppercase names deliberately mirror C xv6's PGROUNDUP/PGROUNDDOWN macros.
+#[allow(non_snake_case)]
 pub fn PGROUNDUP(x: usize) -> usize { (x + PGSIZE - 1) & !(PGSIZE - 1) }
+#[allow(non_snake_case)]
 pub fn PGROUNDDOWN(x: usize) -> usize { x & !(PGSIZE - 1) }

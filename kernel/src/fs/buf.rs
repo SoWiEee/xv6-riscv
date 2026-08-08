@@ -128,7 +128,7 @@ pub fn bcache_addr() -> usize {
 }
 
 /// Buffer cache with LRU replacement policy.
-struct BufCache {
+pub struct BufCache {
     buffers: [Option<Buf>; NBUF],
     head: Option<usize>, // LRU list - index of most recently used
     tail: Option<usize>, // LRU list - index of least recently used

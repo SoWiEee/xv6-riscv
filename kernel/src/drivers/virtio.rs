@@ -4,6 +4,12 @@
 //! Implements the virtio 1.0 block device interface using memory-mapped I/O
 //! at VIRTIO0 (0x10001000). Uses a simple single-queue design with 8 descriptors.
 
+// This module deliberately defines the full virtio-mmio register map, status
+// codes, and descriptor flags as a spec reference; not all are used by the
+// minimal single-queue driver (e.g. the shadow `desc`/`free_desc` fields, which
+// the device reads from the mapped queue pages instead).
+#![allow(dead_code)]
+
 use crate::arch::asm::VIRTIO0;
 use crate::arch::interrupt::plic_init_hart;
 use crate::mm::frame_allocator::alloc_page;

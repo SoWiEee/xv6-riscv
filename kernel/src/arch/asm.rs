@@ -15,14 +15,6 @@ macro_rules! write_csr {
     }};
 }
 
-macro_rules! swap_csr {
-    ($csr:ident, $val:expr) => {{
-        let old: usize;
-        unsafe { asm!(concat!("csrrw {}, ", stringify!($csr), ", {}"), out(reg) old, in(reg) $val) };
-        old
-    }};
-}
-
 macro_rules! set_csr {
     ($csr:ident, $val:expr) => {{
         unsafe { asm!(concat!("csrs ", stringify!($csr), ", {}"), in(reg) $val) };

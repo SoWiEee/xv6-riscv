@@ -10,8 +10,6 @@ use crate::arch::asm::r_tp;
 use crate::sync::spinlock::SpinLock;
 use crate::mm::page_table::PageTable;
 use crate::fs::Inode;
-use alloc::collections::BTreeMap;
-use alloc::vec::Vec;
 
 /// Number of pages in a user process's stack. The stack sits directly above the
 /// program image (with a guard page below it), and the heap grows above it — see
@@ -184,10 +182,6 @@ pub fn userinit() {
     // Make runnable
     p.set_runnable();
 }
-
-// Wait queues for sleep/wakeup - using usize (process pointer as usize) to avoid Send issues
-static WAIT_QUEUES: SpinLock<BTreeMap<usize, Vec<usize>>> =
-    SpinLock::new(BTreeMap::new(), "wait_queues");
 
 /// Global lock protecting the parent/child relationship used by wait/exit,
 /// mirroring xv6's `wait_lock`. It must be a distinct lock from any individual

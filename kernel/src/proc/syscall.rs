@@ -67,7 +67,7 @@ pub fn proc_syscall() {
 
     tf.a0 = match num {
         SYS_FORK => sys_fork() as usize,
-        SYS_EXIT => { sys_exit(tf.a0 as i32); 0 },
+        SYS_EXIT => sys_exit(tf.a0 as i32),
         SYS_WAIT => sys_wait(tf.a0) as usize,
         SYS_PIPE => sys_pipe(tf.a0) as usize,
         SYS_READ => sys_read(tf.a0, tf.a1, tf.a2) as usize,

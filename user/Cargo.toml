@@ -3,16 +3,12 @@ name = "xv6-user"
 version = "0.1.0"
 edition = "2024"
 
+# Profiles (panic = "abort") live in the workspace-root Cargo.toml; Cargo ignores
+# profile keys in a non-root manifest. The build target is passed explicitly on
+# every cargo invocation (--target riscv64imac-unknown-none-elf).
+
 [dependencies]
 xv6-user-lib = { path = "../user-lib" }
-
-[profile.dev]
-panic = "abort"
-lto = true
-
-[profile.release]
-panic = "abort"
-lto = true
 
 [[bin]]
 name = "sh"
@@ -33,6 +29,3 @@ path = "src/bin/init.rs"
 [[bin]]
 name = "init_test"
 path = "src/bin/init_test.rs"
-
-[build]
-target = "riscv64gc-unknown-linux-gnu"
